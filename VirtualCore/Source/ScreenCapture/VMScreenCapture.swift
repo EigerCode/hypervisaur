@@ -135,9 +135,10 @@ public enum VMScreenCapture {
 
     /// Captures the region at the size it has on screen, in pixels.
     static func configure(_ configuration: SCStreamConfiguration, for region: VMCaptureRegion, scale: CGFloat) {
+        let size = VMDisplayGeometry.pixelSize(of: region.rect, scale: scale)
         configuration.sourceRect = region.rect
-        configuration.width = Int(region.rect.width * scale)
-        configuration.height = Int(region.rect.height * scale)
+        configuration.width = size.width
+        configuration.height = size.height
         configuration.ignoreShadowsSingleWindow = true
         configuration.colorSpaceName = CGColorSpace.sRGB
     }
