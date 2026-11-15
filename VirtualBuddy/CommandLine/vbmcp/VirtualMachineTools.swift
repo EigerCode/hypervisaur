@@ -704,7 +704,7 @@ private enum Requirements {
 
 private enum App {
     /// Sends a request to this copy of the app, which launches it if needed. The app comes to the front unless `activates`
-    /// is false, since it may need to ask the user whether to allow the request.
+    /// is false; the app comes forward by itself when it needs to ask the user whether to allow the request.
     @MainActor
     static func open(_ action: String, name: String, parameters: [String: String] = [:], activates: Bool = true) async throws {
         var components = URLComponents()
@@ -801,7 +801,7 @@ private enum Screenshots {
         let attachmentURL = AutomationReply.attachmentURL(for: replyID, pathExtension: "png")
 
         do {
-            try await App.open("screenshot", name: model.name, parameters: ["reply": replyID.uuidString])
+            try await App.open("screenshot", name: model.name, parameters: ["reply": replyID.uuidString], activates: false)
             await progress("Waiting for Hypervisaur to take a screenshot of \(model.name)", nil)
 
             let reply = try await AutomationReply.wait(
