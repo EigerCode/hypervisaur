@@ -168,7 +168,9 @@ final class DeepLinkHandler {
 
             let size = try await session.sendInput(events)
 
-            writeReply(.success("Sent \(events.count) input events to \(name.wrappedInSmartQuotes). The display is \(size.width)×\(size.height) pixels."), for: replyID)
+            /// Keyboard input doesn't need the display, so its size isn't known then.
+            let displaySize = size.width > 0 && size.height > 0 ? " The display is \(size.width)×\(size.height) pixels." : ""
+            writeReply(.success("Sent \(events.count) input events to \(name.wrappedInSmartQuotes).\(displaySize)"), for: replyID)
         }
 
         func cloneVM(named name: String, as cloneName: String?, reply replyID: UUID?) async throws {
