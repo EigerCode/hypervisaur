@@ -476,27 +476,6 @@ final class VirtualBuddyVMView: VZVirtualMachineView {
         guard eventDeliveryMask.allowsKeyboardEvents else { return }
         super.flagsChanged(with: event)
     }
-
-    // MARK: Automation
-
-    /// Gives the guest an event that was made for it, such as on behalf of `vbmcp`, whether or not the user has turned off
-    /// the keyboard or mouse, and without starting a file drag.
-    func deliverSynthesizedEvent(_ event: NSEvent) {
-        switch event.type {
-        case .mouseMoved: super.mouseMoved(with: event)
-        case .leftMouseDown: super.mouseDown(with: event)
-        case .leftMouseUp: super.mouseUp(with: event)
-        case .leftMouseDragged: super.mouseDragged(with: event)
-        case .rightMouseDown: super.rightMouseDown(with: event)
-        case .rightMouseUp: super.rightMouseUp(with: event)
-        case .rightMouseDragged: super.rightMouseDragged(with: event)
-        case .scrollWheel: super.scrollWheel(with: event)
-        case .keyDown: super.keyDown(with: event)
-        case .keyUp: super.keyUp(with: event)
-        case .flagsChanged: super.flagsChanged(with: event)
-        default: break
-        }
-    }
 }
 
 #if DEBUG

@@ -1,5 +1,4 @@
 import AppKit
-import Carbon.HIToolbox
 import Virtualization
 import VirtualCore
 
@@ -38,15 +37,14 @@ private protocol GuestInputDevice {
 
     func canSendKey(_ keyCode: UInt16) -> Bool
 
-    /// Sends a key press or release, with the modifier keys that are down after it.
-    func sendKey(_ keyCode: UInt16, isDown: Bool, modifiers: Set<UInt16>)
+    func sendKey(_ keyCode: UInt16, isDown: Bool)
 
     /// Moves the pointer to a pixel of the display, with the buttons that are down.
-    func movePointer(to point: CGPoint, buttons: [VMMouseButton: Int], modifiers: Set<UInt16>)
+    func movePointer(to point: CGPoint, buttons: [VMMouseButton: Int])
 
-    func sendButton(_ button: VMMouseButton, isDown: Bool, clickCount: Int, at point: CGPoint, buttons: [VMMouseButton: Int], modifiers: Set<UInt16>)
+    func sendButton(_ button: VMMouseButton, isDown: Bool, clickCount: Int, at point: CGPoint, buttons: [VMMouseButton: Int])
 
-    func scroll(dx: Int, dy: Int, at point: CGPoint, buttons: [VMMouseButton: Int], modifiers: Set<UInt16>)
+    func scroll(dx: Int, dy: Int, at point: CGPoint, buttons: [VMMouseButton: Int])
 }
 
 /// Sends events to a guest one after another, keeping track of the keys and buttons that are down.
@@ -115,7 +113,7 @@ private final class GuestInputPlayer {
             case .move(let x, let y):
                 let point = CGPoint(x: x, y: y)
                 pointer = point
-                device.movePointer(to: point, buttons: buttons, modifiers: Set(keys))
+                device.movePointer(to: point, buttons: buttons)
             case .button(let button, let isDown, let clickCount):
                 guard let pointer else { continue }
                 if isDown {
@@ -123,10 +121,10 @@ private final class GuestInputPlayer {
                 } else {
                     guard buttons.removeValue(forKey: button) != nil else { continue }
                 }
-                device.sendButton(button, isDown: isDown, clickCount: clickCount, at: pointer, buttons: buttons, modifiers: Set(keys))
+                device.sendButton(button, isDown: isDown, clickCount: clickCount, at: pointer, buttons: buttons)
             case .scroll(let dx, let dy):
                 guard let pointer else { continue }
-                device.scroll(dx: dx, dy: dy, at: pointer, buttons: buttons, modifiers: Set(keys))
+                device.scroll(dx: dx, dy: dy, at: pointer, buttons: buttons)
             case .key(let code, let isDown):
                 if isDown {
                     guard !keys.contains(code) else { continue }
@@ -135,7 +133,7 @@ private final class GuestInputPlayer {
                     guard let index = keys.firstIndex(of: code) else { continue }
                     keys.remove(at: index)
                 }
-                device.sendKey(code, isDown: isDown, modifiers: Set(keys))
+                device.sendKey(code, isDown: isDown)
             case .pause(let milliseconds):
                 try await Task.sleep(for: .milliseconds(milliseconds))
             }
@@ -147,12 +145,12 @@ private final class GuestInputPlayer {
         if let pointer {
             for (button, clickCount) in buttons {
                 buttons[button] = nil
-                device.sendButton(button, isDown: false, clickCount: clickCount, at: pointer, buttons: buttons, modifiers: Set(keys))
+                device.sendButton(button, isDown: false, clickCount: clickCount, at: pointer, buttons: buttons)
             }
         }
 
         while let code = keys.popLast() {
-            device.sendKey(code, isDown: false, modifiers: Set(keys))
+            device.sendKey(code, isDown: false)
         }
     }
 }
@@ -177,21 +175,21 @@ private struct QEMUGuestInput: GuestInputDevice {
         QEMUKeyMap.keyNumber(forKeyCode: keyCode) != nil
     }
 
-    func sendKey(_ keyCode: UInt16, isDown: Bool, modifiers: Set<UInt16>) {
+    func sendKey(_ keyCode: UInt16, isDown: Bool) {
         guard let keyNumber = QEMUKeyMap.keyNumber(forKeyCode: keyCode) else { return }
         machine.sendKey(keyNumber, isDown: isDown)
     }
 
-    func movePointer(to point: CGPoint, buttons: [VMMouseButton: Int], modifiers: Set<UInt16>) {
+    func movePointer(to point: CGPoint, buttons: [VMMouseButton: Int]) {
         sendPointer(at: point, buttons: pointerButtons(buttons))
     }
 
-    func sendButton(_ button: VMMouseButton, isDown: Bool, clickCount: Int, at point: CGPoint, buttons: [VMMouseButton: Int], modifiers: Set<UInt16>) {
+    func sendButton(_ button: VMMouseButton, isDown: Bool, clickCount: Int, at point: CGPoint, buttons: [VMMouseButton: Int]) {
         sendPointer(at: point, buttons: pointerButtons(buttons))
     }
 
     /// QEMU's pointer has wheel buttons, which are pressed and released once for each line.
-    func scroll(dx: Int, dy: Int, at point: CGPoint, buttons: [VMMouseButton: Int], modifiers: Set<UInt16>) {
+    func scroll(dx: Int, dy: Int, at point: CGPoint, buttons: [VMMouseButton: Int]) {
         let pressed = pointerButtons(buttons)
 
         func turn(_ wheel: VNCClient.PointerButtons, times: Int) {
@@ -221,23 +219,40 @@ private struct QEMUGuestInput: GuestInputDevice {
 
 // MARK: - Virtualization
 
-/// Sends input to a guest that runs with Virtualization, which has no public API for it.
+/// Sends input to a guest that runs with Virtualization through its USB keyboard and screen coordinate pointing device,
+/// with private API.
 ///
-/// Input is sent as `NSEvent`s made here and given straight to the `VZVirtualMachineView` that shows the guest, in this
-/// process, which turns them into input from the guest's USB keyboard and pointer, the same as events from the Mac's own
-/// keyboard and mouse. The events aren't posted to the window server or the app, so they don't depend on the window being
-/// key or the app being active, and they don't move the Mac's own pointer. The view must be in a window, since it places
-/// the guest's pointer from where events are in it.
+/// Virtualization has no public API for input. `VZVirtualMachineView` only passes on pointer events while the Mac's own
+/// pointer is over it, so events made for it are dropped, but the private `_VZKeyboard` and
+/// `_VZScreenCoordinatePointingDevice` objects that it sends its input to take events directly. The guest gets them as
+/// input from its keyboard and mouse, whether or not the window is in front, key, or covered by other windows.
+/// The view must still be in a window, since pointer positions are worked out by the view from where they are in it.
 @MainActor
 private struct VirtualizationGuestInput: GuestInputDevice {
     let view: VirtualBuddyVMView
     let window: NSWindow
+    let keyboard: _VZKeyboard
+    let pointingDevice: _VZScreenCoordinatePointingDevice
     /// The part of the window that screenshots capture, in points, with the origin at the window's top left corner.
     let captureRect: CGRect
     let scale: CGFloat
     let displaySize: (width: Int, height: Int)
 
     init(machine: VZVirtualMachine, displayView: NSView?) throws {
+        let classNames = ["_VZKeyboard", "_VZKeyEvent", "_VZScreenCoordinatePointingDevice", "_VZScreenCoordinatePointerEvent", "_VZScrollWheelEvent"]
+        guard classNames.allSatisfy({ NSClassFromString($0) != nil }),
+              machine.responds(to: NSSelectorFromString("_keyboards")),
+              machine.responds(to: NSSelectorFromString("_pointingDevices"))
+        else {
+            throw Failure("This version of macOS doesn’t offer keyboard and pointer input for virtual machines.")
+        }
+
+        guard let keyboard = machine._keyboards.first else {
+            throw Failure("The virtual machine has no keyboard.")
+        }
+        guard let pointingDevice = machine._pointingDevices.lazy.compactMap({ $0 as? _VZScreenCoordinatePointingDevice }).first else {
+            throw Failure("The virtual machine has no USB pointing device to send pointer input to.")
+        }
         guard let displayView, let window = displayView.window, let region = VMCaptureRegion(view: displayView) else {
             throw Failure("The virtual machine’s window must be open to send it input.")
         }
@@ -247,6 +262,8 @@ private struct VirtualizationGuestInput: GuestInputDevice {
 
         self.view = view
         self.window = window
+        self.keyboard = keyboard
+        self.pointingDevice = pointingDevice
         self.captureRect = region.rect
         self.scale = window.backingScaleFactor
         self.displaySize = VMDisplayGeometry.pixelSize(of: region.rect, scale: scale)
@@ -262,89 +279,52 @@ private struct VirtualizationGuestInput: GuestInputDevice {
 
     func canSendKey(_ keyCode: UInt16) -> Bool { keyCode < 128 }
 
-    func sendKey(_ keyCode: UInt16, isDown: Bool, modifiers: Set<UInt16>) {
-        guard let cgEvent = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: isDown) else { return }
-
-        cgEvent.flags = Self.flags(for: modifiers)
-        if Self.modifierFlags[keyCode] != nil {
-            cgEvent.type = .flagsChanged
-        }
-
-        guard let event = NSEvent(cgEvent: cgEvent) else { return }
-        view.deliverSynthesizedEvent(event)
+    func sendKey(_ keyCode: UInt16, isDown: Bool) {
+        keyboard.send([_VZKeyEvent(type: isDown ? 0 : 1, keyCode: keyCode)])
     }
 
-    func movePointer(to point: CGPoint, buttons: [VMMouseButton: Int], modifiers: Set<UInt16>) {
-        let type: NSEvent.EventType = if buttons[.left] != nil { .leftMouseDragged } else if buttons[.right] != nil { .rightMouseDragged } else { .mouseMoved }
-        sendMouseEvent(type, at: point, clickCount: buttons[.left] ?? buttons[.right] ?? 0, modifiers: modifiers)
+    func movePointer(to point: CGPoint, buttons: [VMMouseButton: Int]) {
+        sendPointer(at: point, buttons: buttons)
     }
 
-    func sendButton(_ button: VMMouseButton, isDown: Bool, clickCount: Int, at point: CGPoint, buttons: [VMMouseButton: Int], modifiers: Set<UInt16>) {
-        let type: NSEvent.EventType = switch (button, isDown) {
-        case (.left, true): .leftMouseDown
-        case (.left, false): .leftMouseUp
-        case (.right, true): .rightMouseDown
-        case (.right, false): .rightMouseUp
-        }
-        sendMouseEvent(type, at: point, clickCount: clickCount, modifiers: modifiers)
+    func sendButton(_ button: VMMouseButton, isDown: Bool, clickCount: Int, at point: CGPoint, buttons: [VMMouseButton: Int]) {
+        sendPointer(at: point, buttons: buttons)
     }
 
-    func scroll(dx: Int, dy: Int, at point: CGPoint, buttons: [VMMouseButton: Int], modifiers: Set<UInt16>) {
-        guard let cgEvent = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0) else { return }
+    func scroll(dx: Int, dy: Int, at point: CGPoint, buttons: [VMMouseButton: Int]) {
+        sendPointer(at: point, buttons: buttons)
 
-        /// Scroll events are placed on the screen, in Core Graphics' coordinates, which have their origin at the top left
-        /// corner of the main display.
-        let screenPoint = window.convertPoint(toScreen: windowLocation(of: point))
-        let mainDisplayHeight = NSScreen.screens.first?.frame.height ?? 0
-        cgEvent.location = CGPoint(x: screenPoint.x, y: mainDisplayHeight - screenPoint.y)
-        cgEvent.flags = Self.flags(for: modifiers)
-        cgEvent.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window.windowNumber))
-        cgEvent.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window.windowNumber))
+        /// An event from a scroll wheel, in lines, as opposed to the precise deltas of a trackpad.
+        guard let cgEvent = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0),
+              let event = NSEvent(cgEvent: cgEvent)
+        else { return }
 
-        guard let event = NSEvent(cgEvent: cgEvent) else { return }
-        view.deliverSynthesizedEvent(event)
+        pointingDevice.send([_VZScrollWheelEvent(event: event)])
     }
 
-    private func sendMouseEvent(_ type: NSEvent.EventType, at point: CGPoint, clickCount: Int, modifiers: Set<UInt16>) {
-        let isUp = type == .leftMouseUp || type == .rightMouseUp
-
+    /// The view works out where the pointer is in the guest's display from a mouse event at the pixel, and the buttons
+    /// that are down are passed separately, since the event would have those of the Mac's own mouse.
+    private func sendPointer(at point: CGPoint, buttons: [VMMouseButton: Int]) {
         guard let event = NSEvent.mouseEvent(
-            with: type,
-            location: windowLocation(of: point),
-            modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(Self.flags(for: modifiers).rawValue)),
+            with: .mouseMoved,
+            location: VMDisplayGeometry.windowLocation(ofPixel: point, in: captureRect, scale: scale, windowHeight: window.frame.height),
+            modifierFlags: [],
             timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber,
             context: nil,
             eventNumber: 0,
-            clickCount: clickCount,
-            pressure: isUp || type == .mouseMoved ? 0 : 1
+            clickCount: 0,
+            pressure: 0
         ) else { return }
 
-        view.deliverSynthesizedEvent(event)
-    }
-
-    private func windowLocation(of point: CGPoint) -> CGPoint {
-        VMDisplayGeometry.windowLocation(ofPixel: point, in: captureRect, scale: scale, windowHeight: window.frame.height)
-    }
-
-    /// The modifier flags for the modifier keys that are down, including the device-dependent flags from IOKit that tell
-    /// the left and right keys apart.
-    private static func flags(for keys: Set<UInt16>) -> CGEventFlags {
-        keys.reduce(into: CGEventFlags()) { flags, keyCode in
-            guard let modifier = modifierFlags[keyCode] else { return }
-            flags.insert(modifier.flag)
-            flags.insert(CGEventFlags(rawValue: modifier.deviceFlag))
+        let location = _VZScreenCoordinatePointerEvent(event: event, view: view).location
+        let pressedButtons = buttons.keys.reduce(0) { mask, button in
+            switch button {
+            case .left: mask | 1 << 0
+            case .right: mask | 1 << 1
+            }
         }
-    }
 
-    private static let modifierFlags: [UInt16: (flag: CGEventFlags, deviceFlag: UInt64)] = [
-        UInt16(kVK_Control): (.maskControl, 0x0001),
-        UInt16(kVK_Shift): (.maskShift, 0x0002),
-        UInt16(kVK_RightShift): (.maskShift, 0x0004),
-        UInt16(kVK_Command): (.maskCommand, 0x0008),
-        UInt16(kVK_RightCommand): (.maskCommand, 0x0010),
-        UInt16(kVK_Option): (.maskAlternate, 0x0020),
-        UInt16(kVK_RightOption): (.maskAlternate, 0x0040),
-        UInt16(kVK_RightControl): (.maskControl, 0x2000),
-    ]
+        pointingDevice.send([_VZScreenCoordinatePointerEvent(location: location, pressedButtons: pressedButtons)])
+    }
 }
