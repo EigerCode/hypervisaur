@@ -111,6 +111,8 @@ final class DeepLinkHandler {
                     NotificationCenter.default.post(name: .openVirtualBuddyLibraryWindow, object: action)
                 case .open(let params):
                     try openVM(named: params.name, options: nil)
+                case .boot(let params) where params.background == true:
+                    sessionManager.launchInBackground(try getVM(named: params.name), library: library)
                 case .boot(let params):
                     var effectiveOptions = params.options ?? VMSessionOptions.default
                     effectiveOptions.autoBoot = true

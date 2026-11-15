@@ -15,7 +15,7 @@ extension VirtualMachineSessionUI {
 
         let device: any GuestInputDevice = switch runtime {
         case .qemu(let machine): try QEMUGuestInput(machine: machine)
-        case .virtualization(let machine): try VirtualizationGuestInput(machine: machine, displayView: displayView)
+        case .virtualization(let machine): try VirtualizationGuestInput(machine: machine, captureRegion: captureRegion)
         }
 
         try GuestInputPlayer.validate(events, for: device)
@@ -225,20 +225,16 @@ private struct QEMUGuestInput: GuestInputDevice {
 /// Virtualization has no public API for input. `VZVirtualMachineView` only passes on pointer events while the Mac's own
 /// pointer is over it, so events made for it are dropped, but the private `_VZKeyboard` and
 /// `_VZScreenCoordinatePointingDevice` objects that it sends its input to take events directly. The guest gets them as
-/// input from its keyboard and mouse, whether or not the window is in front, key, or covered by other windows.
-/// The view must still be in a window, since pointer positions are worked out by the view from where they are in it.
+/// input from its keyboard and mouse, whether the window is in front, behind other windows, or not open at all.
 @MainActor
 private struct VirtualizationGuestInput: GuestInputDevice {
-    let view: VirtualBuddyVMView
-    let window: NSWindow
     let keyboard: _VZKeyboard
     let pointingDevice: _VZScreenCoordinatePointingDevice
-    /// The part of the window that screenshots capture, in points, with the origin at the window's top left corner.
-    let captureRect: CGRect
-    let scale: CGFloat
     let displaySize: (width: Int, height: Int)
 
-    init(machine: VZVirtualMachine, displayView: NSView?) throws {
+    /// - Parameter captureRegion: The part of the window that screenshots capture, when the virtual machine has a window.
+    ///   Positions are in the pixels of a screenshot, so they're in the window's pixels then, and the display's otherwise.
+    init(machine: VZVirtualMachine, captureRegion: VMCaptureRegion?) throws {
         let classNames = ["_VZKeyboard", "_VZKeyEvent", "_VZScreenCoordinatePointingDevice", "_VZScreenCoordinatePointerEvent", "_VZScrollWheelEvent"]
         guard classNames.allSatisfy({ NSClassFromString($0) != nil }),
               machine.responds(to: NSSelectorFromString("_keyboards")),
@@ -253,28 +249,22 @@ private struct VirtualizationGuestInput: GuestInputDevice {
         guard let pointingDevice = machine._pointingDevices.lazy.compactMap({ $0 as? _VZScreenCoordinatePointingDevice }).first else {
             throw Failure("The virtual machine has no USB pointing device to send pointer input to.")
         }
-        guard let displayView, let window = displayView.window, let region = VMCaptureRegion(view: displayView) else {
-            throw Failure("The virtual machine’s window must be open to send it input.")
+
+        let displaySize: (width: Int, height: Int)
+        if let captureRegion, let scale = NSApp.window(withWindowNumber: Int(captureRegion.windowID))?.backingScaleFactor {
+            displaySize = VMDisplayGeometry.pixelSize(of: captureRegion.rect, scale: scale)
+        } else if let display = machine.graphicsDevices.first?.displays.first {
+            displaySize = (Int(display.sizeInPixels.width), Int(display.sizeInPixels.height))
+        } else {
+            throw Failure("The virtual machine has no display.")
         }
-        guard let view = Self.virtualMachineView(showing: machine, in: window.contentView) else {
-            throw Failure("The virtual machine’s display isn’t in its window.")
+        guard displaySize.width > 0, displaySize.height > 0 else {
+            throw Failure("The virtual machine’s display has no size yet.")
         }
 
-        self.view = view
-        self.window = window
         self.keyboard = keyboard
         self.pointingDevice = pointingDevice
-        self.captureRect = region.rect
-        self.scale = window.backingScaleFactor
-        self.displaySize = VMDisplayGeometry.pixelSize(of: region.rect, scale: scale)
-    }
-
-    private static func virtualMachineView(showing machine: VZVirtualMachine, in view: NSView?) -> VirtualBuddyVMView? {
-        guard let view else { return nil }
-        if let vmView = view as? VirtualBuddyVMView, vmView.virtualMachine === machine {
-            return vmView
-        }
-        return view.subviews.lazy.compactMap { virtualMachineView(showing: machine, in: $0) }.first
+        self.displaySize = displaySize
     }
 
     func canSendKey(_ keyCode: UInt16) -> Bool { keyCode < 128 }
@@ -302,28 +292,16 @@ private struct VirtualizationGuestInput: GuestInputDevice {
         pointingDevice.send([_VZScrollWheelEvent(event: event)])
     }
 
-    /// The view works out where the pointer is in the guest's display from a mouse event at the pixel, and the buttons
-    /// that are down are passed separately, since the event would have those of the Mac's own mouse.
+    /// The pointing device takes positions as fractions of the display's size, and the buttons that are down as a mask
+    /// like `NSEvent.pressedMouseButtons`.
     private func sendPointer(at point: CGPoint, buttons: [VMMouseButton: Int]) {
-        guard let event = NSEvent.mouseEvent(
-            with: .mouseMoved,
-            location: VMDisplayGeometry.windowLocation(ofPixel: point, in: captureRect, scale: scale, windowHeight: window.frame.height),
-            modifierFlags: [],
-            timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: window.windowNumber,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 0,
-            pressure: 0
-        ) else { return }
-
-        let location = _VZScreenCoordinatePointerEvent(event: event, view: view).location
         let pressedButtons = buttons.keys.reduce(0) { mask, button in
             switch button {
             case .left: mask | 1 << 0
             case .right: mask | 1 << 1
             }
         }
+        let location = VMDisplayGeometry.normalizedLocation(ofPixel: point, displaySize: displaySize)
 
         pointingDevice.send([_VZScreenCoordinatePointerEvent(location: location, pressedButtons: pressedButtons)])
     }

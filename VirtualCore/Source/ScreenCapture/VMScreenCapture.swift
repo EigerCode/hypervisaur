@@ -1,6 +1,7 @@
 import AppKit
 import ScreenCaptureKit
 import UniformTypeIdentifiers
+import Virtualization
 
 /// The part of a window that shows a virtual machine's display, which is what screenshots and recordings capture.
 public struct VMCaptureRegion: Equatable, @unchecked Sendable {
@@ -33,8 +34,8 @@ public struct ScreenCapturePermissionError: LocalizedError {
 /// Takes screenshots of virtual machines.
 ///
 /// Guests that run in QEMU are captured from their display's frames, at the guest's resolution. Guests that run with
-/// Virtualization only draw into their window, so they're captured from the window with ScreenCaptureKit, which needs
-/// permission to record the screen.
+/// Virtualization are captured from their window with ScreenCaptureKit, which needs permission to record the screen, or
+/// from their display, at the guest's resolution, when they run without a window.
 public enum VMScreenCapture {
     @MainActor
     public static func screenshot(of runtime: VMRuntime, in region: VMCaptureRegion?) async throws -> CGImage {
@@ -45,11 +46,53 @@ public enum VMScreenCapture {
             return frame
         }
 
-        guard let region else {
+        if let region {
+            return try await screenshot(of: region)
+        }
+
+        guard let display = runtime.virtualMachine?.graphicsDevices.first?.displays.first else {
             throw Failure("The virtual machine’s display isn’t on screen.")
         }
 
-        return try await screenshot(of: region)
+        return try await screenshot(of: display)
+    }
+
+    /// A screenshot of a Virtualization display at the guest's resolution, which doesn't need a window.
+    ///
+    /// Virtualization only offers this through private API. There's no public way to capture a display that isn't on screen.
+    @MainActor
+    public static func screenshot(of display: VZGraphicsDisplay) async throws -> CGImage {
+        guard display.responds(to: NSSelectorFromString("_takeScreenshotWithCompletionHandler:")) else {
+            throw Failure("This version of macOS can’t take screenshots of virtual machines without a window. Open the virtual machine’s window, then try again.")
+        }
+
+        let screenshot: Any = try await withCheckedThrowingContinuation { continuation in
+            display._takeScreenshot { image, error in
+                if let image {
+                    continuation.resume(returning: image)
+                } else {
+                    continuation.resume(throwing: (error as? Error) ?? Failure("The virtual machine’s display couldn’t be captured."))
+                }
+            }
+        }
+
+        let size = (width: Int(display.sizeInPixels.width), height: Int(display.sizeInPixels.height))
+        let image: CGImage? = if CFGetTypeID(screenshot as CFTypeRef) == CGImage.typeID {
+            (screenshot as! CGImage)
+        } else {
+            (screenshot as? NSImage)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        }
+
+        guard let image else {
+            throw Failure("The virtual machine’s display couldn’t be captured.")
+        }
+
+        /// Pointer input is placed by the display's size in pixels, so screenshots are always that size.
+        guard image.width != size.width || image.height != size.height else { return image }
+        guard let resized = image.vb_resized(to: size) else {
+            throw Failure("The virtual machine’s display couldn’t be captured.")
+        }
+        return resized
     }
 
     /// A small picture of the virtual machine's display, for showing what it's doing at a glance.
@@ -185,12 +228,14 @@ private extension CGImage {
         guard longestSide > maxPixelSize else { return self }
 
         let scale = CGFloat(maxPixelSize) / CGFloat(longestSide)
-        let size = CGSize(width: (CGFloat(width) * scale).rounded(), height: (CGFloat(height) * scale).rounded())
+        return vb_resized(to: (Int((CGFloat(width) * scale).rounded()), Int((CGFloat(height) * scale).rounded())))
+    }
 
+    func vb_resized(to size: (width: Int, height: Int)) -> CGImage? {
         guard let context = CGContext(
             data: nil,
-            width: Int(size.width),
-            height: Int(size.height),
+            width: size.width,
+            height: size.height,
             bitsPerComponent: 8,
             bytesPerRow: 0,
             space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -198,7 +243,7 @@ private extension CGImage {
         ) else { return nil }
 
         context.interpolationQuality = .high
-        context.draw(self, in: CGRect(origin: .zero, size: size))
+        context.draw(self, in: CGRect(x: 0, y: 0, width: size.width, height: size.height))
 
         return context.makeImage()
     }

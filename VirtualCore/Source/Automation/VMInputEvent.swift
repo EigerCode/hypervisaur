@@ -21,21 +21,16 @@ public enum VMInputEvent: Codable, Sendable, Equatable {
     case pause(milliseconds: Int)
 }
 
-/// Maps between screenshots of a virtual machine's display and the window that shows it, for guests that are
-/// captured from their window.
+/// Maps between screenshots of a virtual machine's display and the positions its pointing device takes.
 public enum VMDisplayGeometry {
     /// The size in pixels of a capture of a region of a window, which is the size of its screenshots.
     public static func pixelSize(of rect: CGRect, scale: CGFloat) -> (width: Int, height: Int) {
         (Int(rect.width * scale), Int(rect.height * scale))
     }
 
-    /// Where a pixel of a screenshot is in the window's coordinates, which have their origin at the bottom left corner.
-    /// - Parameters:
-    ///   - pixel: The pixel in the screenshot, with the origin at its top left corner.
-    ///   - rect: The captured region of the window, in points, with the origin at the window's top left corner.
-    ///   - scale: The number of pixels per point in the screenshot.
-    ///   - windowHeight: The height of the window's frame, in points.
-    public static func windowLocation(ofPixel pixel: CGPoint, in rect: CGRect, scale: CGFloat, windowHeight: CGFloat) -> CGPoint {
-        CGPoint(x: rect.minX + pixel.x / scale, y: windowHeight - (rect.minY + pixel.y / scale))
+    /// A pixel of a screenshot as a fraction of the display's width and height, with the origin at the top left corner,
+    /// which is how Virtualization's pointing device takes positions.
+    public static func normalizedLocation(ofPixel pixel: CGPoint, displaySize: (width: Int, height: Int)) -> CGPoint {
+        CGPoint(x: pixel.x / CGFloat(displaySize.width), y: pixel.y / CGFloat(displaySize.height))
     }
 }

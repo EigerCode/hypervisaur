@@ -114,16 +114,14 @@ struct VMInputTests {
         #expect(decoded == events)
     }
 
-    @Test func mapsScreenshotPixelsToTheWindow() {
-        /// A display 1454×818 points at 2× in a window 900 points tall, 32 points below its top.
-        let rect = CGRect(x: 0, y: 32, width: 1454, height: 818)
-
-        let size = VMDisplayGeometry.pixelSize(of: rect, scale: 2)
+    @Test func mapsScreenshotPixelsToThePointingDevice() {
+        /// A display 1454×818 points at 2×, as a screenshot of the window captures it.
+        let size = VMDisplayGeometry.pixelSize(of: CGRect(x: 0, y: 32, width: 1454, height: 818), scale: 2)
         #expect(size.width == 2908)
         #expect(size.height == 1636)
 
-        #expect(VMDisplayGeometry.windowLocation(ofPixel: .zero, in: rect, scale: 2, windowHeight: 900) == CGPoint(x: 0, y: 868))
-        #expect(VMDisplayGeometry.windowLocation(ofPixel: CGPoint(x: 2908, y: 1636), in: rect, scale: 2, windowHeight: 900) == CGPoint(x: 1454, y: 50))
-        #expect(VMDisplayGeometry.windowLocation(ofPixel: CGPoint(x: 101, y: 60), in: rect.offsetBy(dx: 10, dy: 0), scale: 1, windowHeight: 900) == CGPoint(x: 111, y: 808))
+        #expect(VMDisplayGeometry.normalizedLocation(ofPixel: .zero, displaySize: size) == .zero)
+        #expect(VMDisplayGeometry.normalizedLocation(ofPixel: CGPoint(x: 1454, y: 818), displaySize: size) == CGPoint(x: 0.5, y: 0.5))
+        #expect(VMDisplayGeometry.normalizedLocation(ofPixel: CGPoint(x: 727, y: 1227), displaySize: size) == CGPoint(x: 0.25, y: 0.75))
     }
 }

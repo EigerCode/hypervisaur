@@ -11,6 +11,8 @@ struct OpenVMParameters: Codable {
 struct BootVMParameters: Codable {
     var name: String
     var options: VMSessionOptions?
+    /// Starts the virtual machine without opening its window. The options don't apply then.
+    var background: Bool?
 }
 
 struct StopVMParameters: Codable {

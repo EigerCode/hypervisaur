@@ -19,7 +19,8 @@ enum VirtualMachineTools {
     makes a copy of a virtual machine that can run alongside it. run_command runs commands in a running virtual machine, \
     in PowerShell on Windows, and get_guest_logs shows its recent log entries. click, drag, scroll, type_text and \
     press_keys use the virtual machine's keyboard and mouse, as if someone was using it, at positions in a full-size \
-    screenshot; find_text finds where text is on the display, such as a button to click. The first time Hypervisaur is \
+    screenshot; find_text finds where text is on the display, such as a button to click. start_vm with background true \
+    runs a virtual machine without a window, and screenshots and input still work. The first time Hypervisaur is \
     asked to start or stop something, it asks the user to allow it.
     """
 
@@ -117,11 +118,14 @@ enum VirtualMachineTools {
     private static let startVM = MCPTool(
         name: "start_vm",
         title: "Start Virtual Machine",
-        description: "Starts a virtual machine in Hypervisaur, opening its window.",
-        inputSchema: schema(["name": property("string", "The name of the virtual machine.")], required: ["name"]),
+        description: "Starts a virtual machine in Hypervisaur, opening its window, or without a window when background is true.",
+        inputSchema: schema([
+            "name": property("string", "The name of the virtual machine."),
+            "background": property("boolean", "Starts without opening a window, so nothing comes to the front; take_screenshot and the input tools still work. Defaults to false."),
+        ], required: ["name"]),
         run: { arguments, progress in
             let model = try Library.machine(named: try arguments.requiredString("name"))
-            return try await start(model, progress: progress)
+            return try await start(model, inBackground: arguments.bool("background") ?? false, progress: progress)
         }
     )
 
@@ -440,15 +444,19 @@ enum VirtualMachineTools {
     /// How long to wait for the app to start the virtual machine, which includes the time the user may take to allow it.
     private static let startTimeout = Duration.seconds(120)
 
-    private static func start(_ model: VBVirtualMachine, progress: @escaping MCPTool.ProgressHandler) async throws -> String {
+    private static func start(_ model: VBVirtualMachine, inBackground: Bool = false, progress: @escaping MCPTool.ProgressHandler) async throws -> String {
         guard model.configuration.systemType != .windows || WindowsGuestStatus(for: model) == .stopped else {
             return "\(model.name) is already running."
         }
 
-        try await App.open("boot", name: model.name)
+        if inBackground {
+            try await App.open("boot", name: model.name, parameters: ["background": "true"], activates: false)
+        } else {
+            try await App.open("boot", name: model.name)
+        }
 
         guard model.configuration.systemType == .windows else {
-            return "Asked Hypervisaur to start \(model.name)."
+            return inBackground ? "Asked Hypervisaur to start \(model.name) without a window." : "Asked Hypervisaur to start \(model.name)."
         }
 
         await progress("Waiting for Hypervisaur to start \(model.name)", nil)
