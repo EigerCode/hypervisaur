@@ -172,6 +172,9 @@ Then ask for something like "Build a Windows VM with a local user called neil, a
 | `list_virtual_machines` | Lists the virtual machines in the library |
 | `start_vm`, `stop_vm` | Starts a virtual machine, or asks it to shut down |
 | `take_screenshot` | Returns a screenshot of a running virtual machine, so the agent can see what's on its display |
+| `click`, `drag`, `scroll` | Uses a running virtual machine's mouse at a position in a full-size screenshot, even while Hypervisaur is in the background |
+| `type_text`, `press_keys` | Types text or presses key combinations such as `cmd+space` with the virtual machine's keyboard, for the guest's keyboard layout |
+| `find_text` | Finds text on a running virtual machine's display, such as a button, and returns where to click it |
 | `clone_vm` | Makes a clone of a virtual machine that can run alongside it |
 | `run_command` | Runs a command in a running virtual machine and returns its output and exit status |
 | `get_guest_logs` | Returns the most recent entries from a running virtual machine's logs |

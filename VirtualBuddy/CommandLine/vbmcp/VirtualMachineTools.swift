@@ -1,5 +1,6 @@
 import AppKit
 import UniformTypeIdentifiers
+import Vision
 import VirtualCore
 
 /// The tools that `vbmcp` offers for creating and running virtual machines.
@@ -8,7 +9,7 @@ import VirtualCore
 /// Starting and stopping go through the app's URL scheme, so the app asks the user once whether to allow it.
 enum VirtualMachineTools {
     static var all: [MCPTool] {
-        [listVirtualMachines, getStatus, getWindowsRequirements, installWindowsRequirements, createWindowsVM, waitForWindowsVM, startVM, stopVM, takeScreenshot, cloneVM, runCommand, getGuestLogs]
+        [listVirtualMachines, getStatus, getWindowsRequirements, installWindowsRequirements, createWindowsVM, waitForWindowsVM, startVM, stopVM, takeScreenshot, findText, click, drag, scroll, typeText, pressKeys, cloneVM, runCommand, getGuestLogs]
     }
 
     static let instructions = """
@@ -16,8 +17,10 @@ enum VirtualMachineTools {
     any interaction and signs in to a local account, which takes about 10 minutes; call wait_for_windows_vm afterwards \
     to wait until the desktop is ready. take_screenshot shows what's on a running virtual machine's display, and clone_vm \
     makes a copy of a virtual machine that can run alongside it. run_command runs commands in a running virtual machine, \
-    in PowerShell on Windows, and get_guest_logs shows its recent log entries. The first time Hypervisaur is asked to \
-    start or stop something, it asks the user to allow it.
+    in PowerShell on Windows, and get_guest_logs shows its recent log entries. click, drag, scroll, type_text and \
+    press_keys use the virtual machine's keyboard and mouse, as if someone was using it, at positions in a full-size \
+    screenshot; find_text finds where text is on the display, such as a button to click. The first time Hypervisaur is \
+    asked to start or stop something, it asks the user to allow it.
     """
 
     // MARK: - Tools
@@ -224,6 +227,154 @@ enum VirtualMachineTools {
             )
             let entries = String(decoding: result.output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             return entries.isEmpty ? "There are no log entries." : entries
+        }
+    )
+
+    // MARK: - Input
+
+    private static let click = MCPTool(
+        name: "click",
+        title: "Click",
+        description: "Moves the virtual machine's pointer to a position on its display and clicks there, with its own mouse, as if someone was using it. \(Input.coordinatesNote)",
+        inputSchema: schema([
+            "name": property("string", "The name of the virtual machine."),
+            "x": property("number", Input.xDescription),
+            "y": property("number", Input.yDescription),
+            "button": ["type": "string", "enum": ["left", "right"], "description": "The mouse button to click. Defaults to left."],
+            "count": property("integer", "How many times to click: 1 for a click, 2 for a double click. Defaults to 1."),
+        ], required: ["name", "x", "y"]),
+        run: { arguments, progress in
+            let model = try Library.machine(named: try arguments.requiredString("name"))
+            let button = try arguments.string("button").map { name in
+                guard let button = VMMouseButton(rawValue: name.lowercased()) else { throw Failure("The button must be left or right.") }
+                return button
+            } ?? .left
+            let count = arguments.integer("count") ?? 1
+            guard (1...3).contains(count) else { throw Failure("The count must be 1, 2 or 3.") }
+
+            var events: [VMInputEvent] = [try Input.move(arguments, x: "x", y: "y")]
+            for click in 1...count {
+                events += [.button(button, down: true, clickCount: click), .button(button, down: false, clickCount: click)]
+            }
+            return try await Input.send(events, to: model, progress: progress)
+        }
+    )
+
+    private static let drag = MCPTool(
+        name: "drag",
+        title: "Drag",
+        description: "Presses the virtual machine's left mouse button at one position on its display, moves the pointer to another and releases it there. \(Input.coordinatesNote)",
+        inputSchema: schema([
+            "name": property("string", "The name of the virtual machine."),
+            "from_x": property("number", Input.xDescription),
+            "from_y": property("number", Input.yDescription),
+            "to_x": property("number", "Where to release the button, like from_x."),
+            "to_y": property("number", "Where to release the button, like from_y."),
+        ], required: ["name", "from_x", "from_y", "to_x", "to_y"]),
+        run: { arguments, progress in
+            let model = try Library.machine(named: try arguments.requiredString("name"))
+            guard case .move(let fromX, let fromY) = try Input.move(arguments, x: "from_x", y: "from_y"),
+                  case .move(let toX, let toY) = try Input.move(arguments, x: "to_x", y: "to_y")
+            else { throw Failure("The positions to drag from and to are required.") }
+
+            /// The pointer moves in steps, with pauses at both ends, so that the guest notices a drag rather than a click.
+            let steps = 10
+            let moves = (1...steps).map { step -> VMInputEvent in
+                let fraction = Double(step) / Double(steps)
+                return .move(x: fromX + (toX - fromX) * fraction, y: fromY + (toY - fromY) * fraction)
+            }
+            let events: [VMInputEvent] = [.move(x: fromX, y: fromY), .button(.left, down: true, clickCount: 1), .pause(milliseconds: 100)]
+                + moves
+                + [.pause(milliseconds: 100), .button(.left, down: false, clickCount: 1)]
+            return try await Input.send(events, to: model, progress: progress)
+        }
+    )
+
+    private static let scroll = MCPTool(
+        name: "scroll",
+        title: "Scroll",
+        description: "Moves the virtual machine's pointer to a position on its display and turns its mouse's scroll wheel there. \(Input.coordinatesNote)",
+        inputSchema: schema([
+            "name": property("string", "The name of the virtual machine."),
+            "x": property("number", Input.xDescription),
+            "y": property("number", Input.yDescription),
+            "dx": property("integer", "How many lines to scroll sideways: positive shows more of what's to the left, negative what's to the right. Defaults to 0."),
+            "dy": property("integer", "How many lines to scroll: positive shows more of what's above, like turning a scroll wheel up, negative what's below. Defaults to 0. The guest's natural scrolling setting may reverse it."),
+        ], required: ["name", "x", "y"]),
+        run: { arguments, progress in
+            let model = try Library.machine(named: try arguments.requiredString("name"))
+            let dx = arguments.integer("dx") ?? 0
+            let dy = arguments.integer("dy") ?? 0
+            guard dx != 0 || dy != 0 else { throw Failure("Pass dx or dy to say how far to scroll.") }
+
+            return try await Input.send([try Input.move(arguments, x: "x", y: "y"), .scroll(dx: dx, dy: dy)], to: model, progress: progress)
+        }
+    )
+
+    private static let typeText = MCPTool(
+        name: "type_text",
+        title: "Type Text",
+        description: """
+        Types text with the virtual machine's keyboard, into whatever has keyboard focus, as if someone was typing it. \
+        Line breaks press Return and tabs press Tab. The keys are those that type the text on the guest's keyboard layout, \
+        so pass that layout if it isn't U.S.; nothing is typed if the layout can't type some of the text.
+        """,
+        inputSchema: schema([
+            "name": property("string", "The name of the virtual machine."),
+            "text": property("string", "The text to type."),
+            "layout": property("string", Input.layoutDescription),
+        ], required: ["name", "text"]),
+        run: { arguments, progress in
+            let model = try Library.machine(named: try arguments.requiredString("name"))
+            guard let text = arguments["text"]?.stringValue, !text.isEmpty else { throw Failure("The text argument is required.") }
+
+            let events = try await Input.layout(arguments).events(typing: text)
+            return try await Input.send(events, to: model, progress: progress)
+        }
+    )
+
+    private static let pressKeys = MCPTool(
+        name: "press_keys",
+        title: "Press Keys",
+        description: """
+        Presses keys or key combinations on the virtual machine's keyboard, one after another. Each one is a key, or \
+        modifiers and a key joined by +, such as "return", "cmd+space", "ctrl+alt+delete" or "shift+tab". Keys are return, \
+        escape, tab, space, delete (backspace), forward_delete, up, down, left, right, home, end, pageup, pagedown, f1 to f12, \
+        the modifiers cmd, ctrl, alt (option), shift and win (the Windows key, which is cmd), or a single character, which \
+        presses the key that types it on the guest's keyboard layout, so "cmd+z" follows the layout.
+        """,
+        inputSchema: schema([
+            "name": property("string", "The name of the virtual machine."),
+            "keys": ["type": "array", "items": ["type": "string"], "description": "The keys or key combinations to press, in order, such as [\"tab\", \"tab\", \"space\"] or [\"win\"]."],
+            "layout": property("string", Input.layoutDescription),
+        ], required: ["name", "keys"]),
+        run: { arguments, progress in
+            let model = try Library.machine(named: try arguments.requiredString("name"))
+            guard case .array(let values) = arguments["keys"], !values.isEmpty else { throw Failure("The keys argument is required.") }
+            let keys = try values.map { value in
+                guard let key = value.stringValue else { throw Failure("Each of the keys must be a string, such as \"cmd+space\".") }
+                return key
+            }
+
+            let events = try await Input.layout(arguments).events(pressing: keys)
+            return try await Input.send(events, to: model, progress: progress)
+        }
+    )
+
+    private static let findText = MCPTool(
+        name: "find_text",
+        title: "Find Text",
+        description: """
+        Finds text on a running virtual machine's display, such as the title of a button, by recognizing the text in a \
+        screenshot. Returns where each match is, in the pixels of a full-size screenshot, so it can be passed to click.
+        """,
+        inputSchema: schema([
+            "name": property("string", "The name of the virtual machine."),
+            "text": property("string", "The text to find. Matches text that contains it, ignoring case."),
+        ], required: ["name", "text"]),
+        run: { arguments, progress in
+            let model = try Library.machine(named: try arguments.requiredString("name"))
+            return try await Screenshots.findText(try arguments.requiredString("text"), on: model, progress: progress)
         }
     )
 
@@ -552,10 +703,10 @@ private enum Requirements {
 // MARK: - App
 
 private enum App {
-    /// Sends a request to this copy of the app, which launches it if needed. The app comes to the front, since it may need
-    /// to ask the user whether to allow the request.
+    /// Sends a request to this copy of the app, which launches it if needed. The app comes to the front unless `activates`
+    /// is false, since it may need to ask the user whether to allow the request.
     @MainActor
-    static func open(_ action: String, name: String, parameters: [String: String] = [:]) async throws {
+    static func open(_ action: String, name: String, parameters: [String: String] = [:], activates: Bool = true) async throws {
         var components = URLComponents()
         components.scheme = "hypervisaur"
         components.host = action
@@ -566,9 +717,50 @@ private enum App {
         }
 
         let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
+        configuration.activates = activates
 
         _ = try await NSWorkspace.shared.open([url], withApplicationAt: Bundle.main.bundleURL, configuration: configuration)
+    }
+}
+
+// MARK: - Input
+
+private enum Input {
+    static let xDescription = "The horizontal position, in pixels of a full-size screenshot from the left edge."
+    static let yDescription = "The vertical position, in pixels of a full-size screenshot from the top edge."
+    static let coordinatesNote = "Positions are in the pixels of a full-size screenshot, whose size take_screenshot reports; scale positions in a scaled-down screenshot up to it."
+    static let layoutDescription = "The keyboard layout that the guest uses, as the name of a macOS keyboard layout, such as \"Swiss German\", or its input source ID, such as \"com.apple.keylayout.SwissGerman\". Defaults to U.S. Windows guests type correctly with layouts that match the macOS ones, such as U.S."
+
+    /// How long to wait for the app, which includes the time the user may take to allow it.
+    static let timeout = Duration.seconds(60)
+
+    static func move(_ arguments: JSONValue, x xKey: String, y yKey: String) throws -> VMInputEvent {
+        guard let x = arguments[xKey]?.numberValue, let y = arguments[yKey]?.numberValue else {
+            throw Failure("The \(xKey) and \(yKey) arguments are required.")
+        }
+        return .move(x: x, y: y)
+    }
+
+    @MainActor
+    static func layout(_ arguments: JSONValue) throws -> VMKeyboardLayout {
+        try VMKeyboardLayout(named: arguments.string("layout"))
+    }
+
+    /// Sends input to the virtual machine without bringing the app to the front, so it works while another app is in use.
+    @MainActor
+    static func send(_ events: [VMInputEvent], to model: VBVirtualMachine, progress: @escaping MCPTool.ProgressHandler) async throws -> String {
+        let replyID = UUID()
+        let encodedEvents = String(decoding: try JSONEncoder().encode(events), as: UTF8.self)
+
+        try await App.open("input", name: model.name, parameters: ["reply": replyID.uuidString, "events": encodedEvents], activates: false)
+        await progress("Waiting for Hypervisaur to send the input to \(model.name)", nil)
+
+        let reply = try await AutomationReply.wait(
+            for: replyID,
+            timeout: timeout,
+            timeoutMessage: "Hypervisaur hasn’t sent the input to \(model.name). If Hypervisaur is asking whether to allow it to be controlled, allow it, then try again."
+        )
+        return reply.message ?? "Sent the input to \(model.name)."
     }
 }
 
@@ -586,18 +778,8 @@ private enum Screenshots {
             throw Failure("The path to save the screenshot to must end in .png.")
         }
 
-        let replyID = UUID()
-        let attachmentURL = AutomationReply.attachmentURL(for: replyID, pathExtension: "png")
+        let (reply, attachmentURL) = try await request(of: model, progress: progress)
         defer { try? FileManager.default.removeItem(at: attachmentURL) }
-
-        try await App.open("screenshot", name: model.name, parameters: ["reply": replyID.uuidString])
-        await progress("Waiting for Hypervisaur to take a screenshot of \(model.name)", nil)
-
-        let reply = try await AutomationReply.wait(
-            for: replyID,
-            timeout: timeout,
-            timeoutMessage: "Hypervisaur hasn’t taken a screenshot of \(model.name). If Hypervisaur is asking whether to allow it to be controlled or to record the screen, allow it, then call take_screenshot again."
-        )
 
         var text = reply.message ?? "Took a screenshot of \(model.name)."
 
@@ -606,12 +788,36 @@ private enum Screenshots {
             text += " Saved it to \(saveURL.path)."
         }
 
-        let data = try scaledPNG(at: attachmentURL, maximumSize: max(maximumSize, 64))
+        let (data, scaledSize) = try scaledPNG(at: attachmentURL, maximumSize: max(maximumSize, 64))
+        if let scaledSize {
+            text += " The image is scaled down to \(scaledSize.width)×\(scaledSize.height); scale positions in it up to the full size for click and the other input tools."
+        }
         return MCPToolResult(text: text, image: .init(data: data, mimeType: "image/png"))
     }
 
-    /// The image as a PNG that's no larger than the maximum size on its longer side.
-    private static func scaledPNG(at url: URL, maximumSize: Int) throws -> Data {
+    /// Asks the app for a screenshot, which it saves at full size as the reply's attachment. The caller removes the attachment.
+    private static func request(of model: VBVirtualMachine, progress: @escaping MCPTool.ProgressHandler) async throws -> (reply: AutomationReply, attachmentURL: URL) {
+        let replyID = UUID()
+        let attachmentURL = AutomationReply.attachmentURL(for: replyID, pathExtension: "png")
+
+        do {
+            try await App.open("screenshot", name: model.name, parameters: ["reply": replyID.uuidString])
+            await progress("Waiting for Hypervisaur to take a screenshot of \(model.name)", nil)
+
+            let reply = try await AutomationReply.wait(
+                for: replyID,
+                timeout: timeout,
+                timeoutMessage: "Hypervisaur hasn’t taken a screenshot of \(model.name). If Hypervisaur is asking whether to allow it to be controlled or to record the screen, allow it, then try again."
+            )
+            return (reply, attachmentURL)
+        } catch {
+            try? FileManager.default.removeItem(at: attachmentURL)
+            throw error
+        }
+    }
+
+    /// The image as a PNG that's no larger than the maximum size on its longer side, with its size if it was scaled down.
+    private static func scaledPNG(at url: URL, maximumSize: Int) throws -> (data: Data, scaledSize: (width: Int, height: Int)?) {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
@@ -621,7 +827,7 @@ private enum Screenshots {
         }
 
         guard max(width, height) > maximumSize else {
-            return try Data(contentsOf: url)
+            return (try Data(contentsOf: url), nil)
         }
 
         let options: [CFString: Any] = [
@@ -641,7 +847,55 @@ private enum Screenshots {
         guard CGImageDestinationFinalize(destination) else {
             throw Failure("The screenshot couldn’t be compressed.")
         }
-        return data as Data
+        return (data as Data, (image.width, image.height))
+    }
+
+    // MARK: Finding Text
+
+    /// The most recognized text to list when the text isn't found, so that the reply stays a reasonable size.
+    private static let recognizedTextLimit = 60
+
+    static func findText(_ text: String, on model: VBVirtualMachine, progress: @escaping MCPTool.ProgressHandler) async throws -> String {
+        let (_, attachmentURL) = try await request(of: model, progress: progress)
+        defer { try? FileManager.default.removeItem(at: attachmentURL) }
+
+        guard let source = CGImageSourceCreateWithURL(attachmentURL as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
+            throw Failure("The screenshot couldn’t be read.")
+        }
+
+        await progress("Looking for “\(text)” on \(model.name)’s display", nil)
+
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.automaticallyDetectsLanguage = true
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+
+        let width = CGFloat(image.width)
+        let height = CGFloat(image.height)
+        let size = "\(image.width)×\(image.height)"
+
+        /// Vision's boxes are normalized, with the origin at the bottom left corner.
+        func pixelRect(_ box: CGRect) -> CGRect {
+            CGRect(x: box.minX * width, y: (1 - box.maxY) * height, width: box.width * width, height: box.height * height).integral
+        }
+
+        let candidates = (request.results ?? []).compactMap { $0.topCandidates(1).first }
+        let matches = candidates.compactMap { candidate -> String? in
+            guard let range = candidate.string.range(of: text, options: [.caseInsensitive, .diacriticInsensitive]) else { return nil }
+            /// The box of the matching part of the line, so that the center is on the text that was asked for.
+            guard let box = (try? candidate.boundingBox(for: range))?.boundingBox else { return nil }
+            let rect = pixelRect(box)
+            return "- “\(candidate.string)” at \(Int(rect.midX)), \(Int(rect.midY)) (box x \(Int(rect.minX)), y \(Int(rect.minY)), \(Int(rect.width))×\(Int(rect.height)))"
+        }
+
+        guard !matches.isEmpty else {
+            let recognized = candidates.prefix(recognizedTextLimit).map { "- \($0.string)" }.joined(separator: "\n")
+            return "Couldn’t find “\(text)” on \(model.name)’s \(size) pixel display." + (recognized.isEmpty ? " No text was recognized." : " The text on it:\n\(recognized)")
+        }
+
+        return "Found “\(text)” \(matches.count == 1 ? "once" : "\(matches.count) times") on \(model.name)’s \(size) pixel display, at the center of each match in full-size screenshot pixels:\n" + matches.joined(separator: "\n")
     }
 }
 
