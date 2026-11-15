@@ -20,7 +20,8 @@ enum VirtualMachineTools {
     in PowerShell on Windows, and get_guest_logs shows its recent log entries. click, drag, scroll, type_text and \
     press_keys use the virtual machine's keyboard and mouse, as if someone was using it, at positions in a full-size \
     screenshot; find_text finds where text is on the display, such as a button to click. start_vm with background true \
-    runs a virtual machine without a window, and screenshots and input still work. The first time Hypervisaur is \
+    runs a virtual machine without a window, and screenshots and input still work, with the same permissions as for a \
+    virtual machine with one. The first time Hypervisaur is \
     asked to start or stop something, it asks the user to allow it.
     """
 
@@ -121,7 +122,7 @@ enum VirtualMachineTools {
         description: "Starts a virtual machine in Hypervisaur, opening its window, or without a window when background is true.",
         inputSchema: schema([
             "name": property("string", "The name of the virtual machine."),
-            "background": property("boolean", "Starts without opening a window, so nothing comes to the front; take_screenshot and the input tools still work. Defaults to false."),
+            "background": property("boolean", "Starts without opening a window, so nothing comes to the front; take_screenshot and the input tools still work, with the same permissions as for a virtual machine with a window. Defaults to false."),
         ], required: ["name"]),
         run: { arguments, progress in
             let model = try Library.machine(named: try arguments.requiredString("name"))

@@ -47,6 +47,12 @@ public final class VirtualMachineSessionUI: ObservableObject {
     /// The view that the virtual machine's display fills, which is what screenshots and recordings capture.
     weak var displayView: NSView?
 
+    /// The hidden window that shows a Virtualization guest's display while it has no window. See `resolveCaptureRegion()`.
+    var headlessDisplayWindow: NSWindow?
+
+    /// Finishes once the hidden window shows the guest's display.
+    var headlessDisplayReady: Task<Void, Error>?
+
     /// The recording of the virtual machine's display that's in progress.
     @Published var recording: VMScreenRecording?
 

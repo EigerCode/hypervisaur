@@ -172,7 +172,7 @@ Then ask for something like "Build a Windows VM with a local user called neil, a
 | `list_virtual_machines` | Lists the virtual machines in the library |
 | `start_vm`, `stop_vm` | Starts a virtual machine, with or without a window, or asks it to shut down |
 | `take_screenshot` | Returns a screenshot of a running virtual machine, so the agent can see what's on its display |
-| `click`, `drag`, `scroll` | Uses a running virtual machine's mouse at a position in a full-size screenshot, even while Hypervisaur is in the background or the virtual machine has no window |
+| `click`, `drag`, `scroll` | Uses a running virtual machine's mouse at a position in a full-size screenshot, even while Hypervisaur is in the background or the virtual machine has no window, which needs permission to record the screen like screenshots do |
 | `type_text`, `press_keys` | Types text or presses key combinations such as `cmd+space` with the virtual machine's keyboard, for the guest's keyboard layout |
 | `find_text` | Finds text on a running virtual machine's display, such as a button, and returns where to click it |
 | `clone_vm` | Makes a clone of a virtual machine that can run alongside it |
@@ -196,7 +196,7 @@ Virtual machines are stored in `~/Library/Application Support/Hypervisaur`.
 
 While a virtual machine runs, the camera button in its window's toolbar saves a screenshot of its display, and the record button records its display and sound to a movie. They're saved where macOS saves screenshots, which is your desktop unless you've chosen somewhere else in the Screenshot app.
 
-Hypervisaur needs permission to record the screen for recordings, and for screenshots of macOS and Linux virtual machines; macOS asks for it the first time. Screenshots of Windows virtual machines come straight from the virtual machine's display, at its full resolution.
+Hypervisaur needs permission to record the screen for recordings, and for screenshots of macOS and Linux virtual machines; macOS asks for it the first time, also for virtual machines without a window. Screenshots of Windows virtual machines come straight from the virtual machine's display, at its full resolution.
 
 ## Shells, commands and logs
 

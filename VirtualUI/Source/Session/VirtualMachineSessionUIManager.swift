@@ -109,7 +109,13 @@ public final class VirtualMachineSessionUIManager: ObservableObject {
     /// Opening it from the library shows its window, and so does anything going wrong while it starts, so that it isn't missed.
     /// A virtual machine that's already open is left as it is.
     public func launchInBackground(_ vm: VBVirtualMachine, library: VMLibraryController) {
-        guard session(for: vm) == nil else { return }
+        if let existingSession = session(for: vm) {
+            /// A session that isn't running, such as one whose window shows an error, is started again.
+            if existingSession.controller.canStart {
+                launchAndStart(vm, library: library)
+            }
+            return
+        }
 
         /// A virtual machine that's missing or not installed yet is handled the way opening it would.
         guard FileManager.default.fileExists(atPath: vm.bundleURL.path(percentEncoded: false)), !vm.needsInstall else {
@@ -200,6 +206,9 @@ public final class VirtualMachineSessionUIManager: ObservableObject {
         backgroundSessionIDs.remove(vmID)
         backgroundStateObservers[vmID] = nil
 
+        /// The window's own view shows the display from here on.
+        session.closeHeadlessDisplay()
+
         /// The window opens at the size of the virtual machine's display, as far as it fits on the screen.
         let preferredContentSize = session.fixedGuestDisplaySize
             ?? session.virtualMachine.configuration.hardware.displayDevices.first.map { CGSize(width: $0.width, height: $0.height) }
@@ -280,6 +289,8 @@ public final class VirtualMachineSessionUIManager: ObservableObject {
         backgroundStateObservers[vmID] = nil
 
         guard let session = sessions.removeValue(forKey: vmID) else { return }
+
+        session.closeHeadlessDisplay()
 
         VBMemoryLeakDebugAssertions.vb_objectShouldBeReleasedSoon(session)
         VBMemoryLeakDebugAssertions.vb_objectShouldBeReleasedSoon(session.controller)

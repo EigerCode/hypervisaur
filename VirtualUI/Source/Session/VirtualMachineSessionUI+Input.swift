@@ -15,7 +15,7 @@ extension VirtualMachineSessionUI {
 
         let device: any GuestInputDevice = switch runtime {
         case .qemu(let machine): try QEMUGuestInput(machine: machine)
-        case .virtualization(let machine): try VirtualizationGuestInput(machine: machine, captureRegion: captureRegion)
+        case .virtualization(let machine): try VirtualizationGuestInput(machine: machine, captureRegion: await resolveCaptureRegion())
         }
 
         try GuestInputPlayer.validate(events, for: device)
@@ -232,8 +232,8 @@ private struct VirtualizationGuestInput: GuestInputDevice {
     let pointingDevice: _VZScreenCoordinatePointingDevice
     let displaySize: (width: Int, height: Int)
 
-    /// - Parameter captureRegion: The part of the window that screenshots capture, when the virtual machine has a window.
-    ///   Positions are in the pixels of a screenshot, so they're in the window's pixels then, and the display's otherwise.
+    /// - Parameter captureRegion: The part of the window that screenshots capture. Positions are in the pixels of a
+    ///   screenshot, which are the window's pixels.
     init(machine: VZVirtualMachine, captureRegion: VMCaptureRegion?) throws {
         let classNames = ["_VZKeyboard", "_VZKeyEvent", "_VZScreenCoordinatePointingDevice", "_VZScreenCoordinatePointerEvent", "_VZScrollWheelEvent"]
         guard classNames.allSatisfy({ NSClassFromString($0) != nil }),
@@ -250,14 +250,10 @@ private struct VirtualizationGuestInput: GuestInputDevice {
             throw Failure("The virtual machine has no USB pointing device to send pointer input to.")
         }
 
-        let displaySize: (width: Int, height: Int)
-        if let captureRegion, let scale = NSApp.window(withWindowNumber: Int(captureRegion.windowID))?.backingScaleFactor {
-            displaySize = VMDisplayGeometry.pixelSize(of: captureRegion.rect, scale: scale)
-        } else if let display = machine.graphicsDevices.first?.displays.first {
-            displaySize = (Int(display.sizeInPixels.width), Int(display.sizeInPixels.height))
-        } else {
-            throw Failure("The virtual machine has no display.")
+        guard let captureRegion, let scale = NSApp.window(withWindowNumber: Int(captureRegion.windowID))?.backingScaleFactor else {
+            throw Failure("The virtual machine’s display isn’t on screen.")
         }
+        let displaySize = VMDisplayGeometry.pixelSize(of: captureRegion.rect, scale: scale)
         guard displaySize.width > 0, displaySize.height > 0 else {
             throw Failure("The virtual machine’s display has no size yet.")
         }
