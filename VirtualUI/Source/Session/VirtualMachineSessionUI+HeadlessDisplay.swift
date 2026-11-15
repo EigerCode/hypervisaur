@@ -52,9 +52,12 @@ extension VirtualMachineSessionUI {
             throw Failure("There’s no screen to capture the virtual machine’s display on.")
         }
 
-        /// The window's pixels are the display's pixels, so that screenshots are at the guest's resolution.
+        /// The window's pixels are the display's pixels, so that screenshots are at the guest's resolution, unless that's
+        /// larger than the screen: a window that doesn't fit is cut off, so it's made smaller, keeping the display's shape.
         let scale = screen.backingScaleFactor
-        let size = CGSize(width: display.sizeInPixels.width / scale, height: display.sizeInPixels.height / scale)
+        let fullSize = CGSize(width: display.sizeInPixels.width / scale, height: display.sizeInPixels.height / scale)
+        let fit = min(1, screen.frame.width / fullSize.width, screen.frame.height / fullSize.height)
+        let size = CGSize(width: (fullSize.width * fit).rounded(.down), height: (fullSize.height * fit).rounded(.down))
 
         let view = VZVirtualMachineView(frame: CGRect(origin: .zero, size: size))
         view.virtualMachine = machine
