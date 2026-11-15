@@ -36,7 +36,7 @@ extension VirtualMachineSessionUI {
             throw Failure("“\(virtualMachine.name)” isn’t running.")
         }
 
-        return try await VMScreenCapture.screenshot(of: runtime, in: captureRegion)
+        return try await VMScreenCapture.screenshot(of: runtime, in: resolveCaptureRegion())
     }
 
     /// Saves a screenshot of the virtual machine's display where macOS saves screenshots.

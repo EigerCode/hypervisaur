@@ -33,8 +33,8 @@ public struct ScreenCapturePermissionError: LocalizedError {
 /// Takes screenshots of virtual machines.
 ///
 /// Guests that run in QEMU are captured from their display's frames, at the guest's resolution. Guests that run with
-/// Virtualization only draw into their window, so they're captured from the window with ScreenCaptureKit, which needs
-/// permission to record the screen.
+/// Virtualization are always captured from their window with ScreenCaptureKit, which needs permission to record the
+/// screen. Guests that run without a window are shown in a hidden one for that.
 public enum VMScreenCapture {
     @MainActor
     public static func screenshot(of runtime: VMRuntime, in region: VMCaptureRegion?) async throws -> CGImage {
@@ -135,9 +135,10 @@ public enum VMScreenCapture {
 
     /// Captures the region at the size it has on screen, in pixels.
     static func configure(_ configuration: SCStreamConfiguration, for region: VMCaptureRegion, scale: CGFloat) {
+        let size = VMDisplayGeometry.pixelSize(of: region.rect, scale: scale)
         configuration.sourceRect = region.rect
-        configuration.width = Int(region.rect.width * scale)
-        configuration.height = Int(region.rect.height * scale)
+        configuration.width = size.width
+        configuration.height = size.height
         configuration.ignoreShadowsSingleWindow = true
         configuration.colorSpaceName = CGColorSpace.sRGB
     }

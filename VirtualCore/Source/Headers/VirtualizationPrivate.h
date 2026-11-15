@@ -69,6 +69,50 @@ __attribute__((weak_import))
 
 @end
 
+__attribute__((weak_import))
+@interface _VZKeyEvent: NSObject
+
+/// The type is 0 for a key press and 1 for a release. The key code is a macOS virtual key code.
+- (instancetype)initWithType:(NSInteger)type keyCode:(uint16_t)keyCode;
+
+@end
+
+__attribute__((weak_import))
+@interface _VZKeyboard: NSObject
+
+- (void)sendKeyEvents:(NSArray <_VZKeyEvent *> *)events;
+
+@end
+
+__attribute__((weak_import))
+@interface _VZScreenCoordinatePointerEvent: NSObject
+
+/// The buttons are a mask like `NSEvent.pressedMouseButtons`.
+- (instancetype)initWithLocation:(CGPoint)location pressedButtons:(NSInteger)pressedButtons;
+
+@end
+
+__attribute__((weak_import))
+@interface _VZScrollWheelEvent: NSObject
+
+- (instancetype)initWithEvent:(NSEvent *)event;
+
+@end
+
+__attribute__((weak_import))
+@interface _VZPointingDevice: NSObject
+
+- (void)sendScrollWheelEvents:(NSArray <_VZScrollWheelEvent *> *)events;
+
+@end
+
+__attribute__((weak_import))
+@interface _VZScreenCoordinatePointingDevice: _VZPointingDevice
+
+- (void)sendPointerEvents:(NSArray <_VZScreenCoordinatePointerEvent *> *)events;
+
+@end
+
 @interface VZVirtualMachine (Private)
 
 #if !defined(MAC_OS_VERSION_13_0) || MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_VERSION_13_0
@@ -89,6 +133,9 @@ __attribute__((weak_import))
 @property (nonatomic, readonly) NSArray <_VZGraphicsDevice *> *_graphicsDevices;
 #endif
 
+@property (nonatomic, readonly) NSArray <_VZKeyboard *> *_keyboards;
+@property (nonatomic, readonly) NSArray <_VZPointingDevice *> *_pointingDevices;
+
 @end
 
 @interface VZMacPlatformConfiguration (Private)
@@ -102,12 +149,6 @@ __attribute__((weak_import))
 @interface VZVirtualMachineView (Private)
 
 - (void)_setDelegate:(id)delegate;
-
-@end
-
-@interface VZGraphicsDisplay (Private)
-
-- (void)_takeScreenshotWithCompletionHandler:(void(^__nonnull)(id __nullable image, id __nullable error))completion NS_SWIFT_UI_ACTOR API_AVAILABLE(macos(14.0));
 
 @end
 

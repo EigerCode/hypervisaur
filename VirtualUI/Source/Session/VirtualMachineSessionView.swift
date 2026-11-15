@@ -71,7 +71,12 @@ public struct VirtualMachineSessionView: View {
         .windowTitle(controller.virtualMachineModel.name)
         .windowStyleMask([.titled, .miniaturizable, .closable, .resizable])
         .confirmBeforeClosingWindow(callback: confirmBeforeClosing)
-        .task { ui.hostWindow = window }
+        .task {
+            ui.hostWindow = window
+
+            /// The window's own view shows the display, so the hidden one that may have shown it is no longer needed.
+            ui.closeHeadlessDisplay()
+        }
         .onWindowKeyChange { [weak sessionManager, weak ui] isKey in
             guard let sessionManager, let ui else { return }
             sessionManager.focusedSessionChanged.send(isKey ? .init(ui) : nil)

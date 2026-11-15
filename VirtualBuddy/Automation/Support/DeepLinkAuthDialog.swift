@@ -18,6 +18,8 @@ final class DeepLinkAuthPanel: NSPanel {
 
             panelInstances.add(panel)
 
+            /// Requests such as screenshots and input don't bring the app to the front, but the user must see this question.
+            NSApp.activate()
             panel.makeKeyAndOrderFront(nil)
             panel.center()
         }

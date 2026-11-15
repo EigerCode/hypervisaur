@@ -78,6 +78,11 @@ struct VMDisplayViewReader: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         session.displayView = nsView
+
+        /// The hidden window that showed the display while there was no window isn't needed once this one shows it.
+        if nsView.window != nil {
+            session.closeHeadlessDisplay()
+        }
     }
 }
 
