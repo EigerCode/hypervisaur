@@ -13,11 +13,18 @@ extension VirtualMachineSessionUI {
     /// `VZVirtualMachineView`, so the guest is shown in a window that sits behind the desktop picture.
     @MainActor
     func resolveCaptureRegion() async throws -> VMCaptureRegion? {
-        if headlessDisplayWindow == nil, hostWindow == nil, case .virtualization(let machine) = displayedRuntime {
-            try openHeadlessDisplay(for: machine)
+        /// The window's own view takes over once it registers, but it may not have yet while the window opens, so whether
+        /// there's a view to capture decides, and not whether there's a window.
+        if captureRegion == nil, case .virtualization(let machine) = displayedRuntime {
+            if let window = headlessDisplayWindow {
+                displayView = window.contentView
+            } else {
+                try openHeadlessDisplay(for: machine)
+            }
         }
 
-        try await headlessDisplayReady?.value
+        /// Closing the hidden window cancels the wait, and then there's whatever view has taken over.
+        try? await headlessDisplayReady?.value
 
         return captureRegion
     }

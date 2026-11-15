@@ -87,11 +87,8 @@ __attribute__((weak_import))
 __attribute__((weak_import))
 @interface _VZScreenCoordinatePointerEvent: NSObject
 
-- (instancetype)initWithEvent:(NSEvent *)event view:(NSView *)view;
 /// The buttons are a mask like `NSEvent.pressedMouseButtons`.
 - (instancetype)initWithLocation:(CGPoint)location pressedButtons:(NSInteger)pressedButtons;
-
-@property (readonly) CGPoint location;
 
 @end
 

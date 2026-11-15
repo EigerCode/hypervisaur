@@ -107,12 +107,14 @@ public final class VirtualMachineSessionUIManager: ObservableObject {
 
     /// Starts or resumes the virtual machine without opening its window, as though its window had been closed while it ran.
     /// Opening it from the library shows its window, and so does anything going wrong while it starts, so that it isn't missed.
-    /// A virtual machine that's already open is left as it is.
+    /// A virtual machine that's already running is left as it is, and one that's open but stopped is started without
+    /// bringing its window forward.
     public func launchInBackground(_ vm: VBVirtualMachine, library: VMLibraryController) {
         if let existingSession = session(for: vm) {
-            /// A session that isn't running, such as one whose window shows an error, is started again.
+            /// A session that isn't running, such as one whose window shows an error, is started again where it is, without
+            /// bringing its window forward.
             if existingSession.controller.canStart {
-                launchAndStart(vm, library: library)
+                Task { await existingSession.startOrResume() }
             }
             return
         }

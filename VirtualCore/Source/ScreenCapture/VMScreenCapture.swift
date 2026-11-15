@@ -45,11 +45,11 @@ public enum VMScreenCapture {
             return frame
         }
 
-        if let region {
-            return try await screenshot(of: region)
+        guard let region else {
+            throw Failure("The virtual machine’s display isn’t on screen.")
         }
 
-        throw Failure("The virtual machine’s display isn’t on screen.")
+        return try await screenshot(of: region)
     }
 
     /// A small picture of the virtual machine's display, for showing what it's doing at a glance.
@@ -185,14 +185,12 @@ private extension CGImage {
         guard longestSide > maxPixelSize else { return self }
 
         let scale = CGFloat(maxPixelSize) / CGFloat(longestSide)
-        return vb_resized(to: (Int((CGFloat(width) * scale).rounded()), Int((CGFloat(height) * scale).rounded())))
-    }
+        let size = CGSize(width: (CGFloat(width) * scale).rounded(), height: (CGFloat(height) * scale).rounded())
 
-    func vb_resized(to size: (width: Int, height: Int)) -> CGImage? {
         guard let context = CGContext(
             data: nil,
-            width: size.width,
-            height: size.height,
+            width: Int(size.width),
+            height: Int(size.height),
             bitsPerComponent: 8,
             bytesPerRow: 0,
             space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -200,7 +198,7 @@ private extension CGImage {
         ) else { return nil }
 
         context.interpolationQuality = .high
-        context.draw(self, in: CGRect(x: 0, y: 0, width: size.width, height: size.height))
+        context.draw(self, in: CGRect(origin: .zero, size: size))
 
         return context.makeImage()
     }

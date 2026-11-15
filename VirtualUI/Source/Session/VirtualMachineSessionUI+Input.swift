@@ -6,22 +6,40 @@ extension VirtualMachineSessionUI {
     /// Sends keyboard and pointer input to the guest as if it came from its keyboard and mouse.
     ///
     /// Events are sent a moment apart, like a person would, and any key or button that's still down at the end is released.
-    /// - Returns: The size of the display in pixels, which is the size of a screenshot from ``screenshot()``.
+    /// - Returns: The size of the display in pixels, which is the size of a screenshot from ``screenshot()``. It's zero for
+    ///   keyboard input to a Virtualization guest, which doesn't look at the display.
     @MainActor
     public func sendInput(_ events: [VMInputEvent]) async throws -> (width: Int, height: Int) {
         guard let runtime = displayedRuntime else {
             throw Failure("“\(virtualMachine.name)” isn’t running.")
         }
 
-        let device: any GuestInputDevice = switch runtime {
-        case .qemu(let machine): try QEMUGuestInput(machine: machine)
-        case .virtualization(let machine): try VirtualizationGuestInput(machine: machine, captureRegion: await resolveCaptureRegion())
+        let device: any GuestInputDevice
+        switch runtime {
+        case .qemu(let machine):
+            device = try QEMUGuestInput(machine: machine)
+        case .virtualization(let machine):
+            /// Only pointer events are placed on the display, so keys don't need it, or the hidden window that shows it.
+            let needsDisplay = events.contains(where: \.isPointerEvent)
+            let region = needsDisplay ? try await resolveCaptureRegion() : nil
+            device = try VirtualizationGuestInput(machine: machine, captureRegion: region, needsDisplay: needsDisplay)
         }
 
         try GuestInputPlayer.validate(events, for: device)
 
-        let player = GuestInputPlayer(device: device)
-        defer { player.releaseAll() }
+        /// Whether the machine that the input is for still runs, since its input devices can't be used once it has stopped.
+        let isRunning: () -> Bool = { [weak self] in
+            switch (self?.displayedRuntime, runtime) {
+            case (.qemu(let current)?, .qemu(let machine)): current === machine
+            case (.virtualization(let current)?, .virtualization(let machine)): current === machine
+            default: false
+            }
+        }
+
+        let player = GuestInputPlayer(device: device, isRunning: isRunning)
+        defer {
+            if isRunning() { player.releaseAll() }
+        }
 
         try await player.play(events)
 
@@ -42,7 +60,7 @@ private protocol GuestInputDevice {
     /// Moves the pointer to a pixel of the display, with the buttons that are down.
     func movePointer(to point: CGPoint, buttons: [VMMouseButton: Int])
 
-    func sendButton(_ button: VMMouseButton, isDown: Bool, clickCount: Int, at point: CGPoint, buttons: [VMMouseButton: Int])
+    func sendButton(_ button: VMMouseButton, isDown: Bool, at point: CGPoint, buttons: [VMMouseButton: Int])
 
     func scroll(dx: Int, dy: Int, at point: CGPoint, buttons: [VMMouseButton: Int])
 }
@@ -50,29 +68,30 @@ private protocol GuestInputDevice {
 /// Sends events to a guest one after another, keeping track of the keys and buttons that are down.
 @MainActor
 private final class GuestInputPlayer {
-    /// The time between events, so that the guest sees each of them.
-    static let eventInterval = Duration.milliseconds(10)
-    /// How long a mouse button is held down for a click.
-    static let clickDuration = Duration.milliseconds(40)
-
     static let maximumPause = 60_000
     static let maximumScrollLines = 100
 
     private let device: any GuestInputDevice
+    private let isRunning: () -> Bool
     private var pointer: CGPoint?
     /// The buttons that are down, with the click count they were pressed with.
     private var buttons = [VMMouseButton: Int]()
     /// The keys that are down, in the order they were pressed.
     private var keys = [UInt16]()
 
-    init(device: any GuestInputDevice) {
+    init(device: any GuestInputDevice, isRunning: @escaping () -> Bool) {
         self.device = device
+        self.isRunning = isRunning
     }
 
     /// Checks all events before any are sent, so that a request that can't be done doesn't do part of it.
     static func validate(_ events: [VMInputEvent], for device: any GuestInputDevice) throws {
         let size = device.displaySize
         var hasPointer = false
+
+        guard VMInputEvent.estimatedDuration(of: events) <= VMInputEvent.maximumDuration else {
+            throw Failure("Sending this input would take longer than \(VMInputEvent.maximumDuration.components.seconds) seconds. Split it into smaller requests.")
+        }
 
         for event in events {
             switch event {
@@ -105,9 +124,11 @@ private final class GuestInputPlayer {
         for event in events {
             if let previous {
                 let isClick = if case .button(_, true, _) = previous, case .button(_, false, _) = event { true } else { false }
-                try await Task.sleep(for: isClick ? Self.clickDuration : Self.eventInterval)
+                try await Task.sleep(for: isClick ? VMInputEvent.clickDuration : VMInputEvent.interval)
             }
             previous = event
+
+            guard isRunning() else { throw Failure("The virtual machine stopped before all of the input was sent.") }
 
             switch event {
             case .move(let x, let y):
@@ -121,7 +142,7 @@ private final class GuestInputPlayer {
                 } else {
                     guard buttons.removeValue(forKey: button) != nil else { continue }
                 }
-                device.sendButton(button, isDown: isDown, clickCount: clickCount, at: pointer, buttons: buttons)
+                device.sendButton(button, isDown: isDown, at: pointer, buttons: buttons)
             case .scroll(let dx, let dy):
                 guard let pointer else { continue }
                 device.scroll(dx: dx, dy: dy, at: pointer, buttons: buttons)
@@ -143,9 +164,9 @@ private final class GuestInputPlayer {
     /// Releases whatever is still down, so that the guest isn't left with a key or button held.
     func releaseAll() {
         if let pointer {
-            for (button, clickCount) in buttons {
+            for button in Array(buttons.keys) {
                 buttons[button] = nil
-                device.sendButton(button, isDown: false, clickCount: clickCount, at: pointer, buttons: buttons)
+                device.sendButton(button, isDown: false, at: pointer, buttons: buttons)
             }
         }
 
@@ -184,7 +205,7 @@ private struct QEMUGuestInput: GuestInputDevice {
         sendPointer(at: point, buttons: pointerButtons(buttons))
     }
 
-    func sendButton(_ button: VMMouseButton, isDown: Bool, clickCount: Int, at point: CGPoint, buttons: [VMMouseButton: Int]) {
+    func sendButton(_ button: VMMouseButton, isDown: Bool, at point: CGPoint, buttons: [VMMouseButton: Int]) {
         sendPointer(at: point, buttons: pointerButtons(buttons))
     }
 
@@ -232,11 +253,23 @@ private struct VirtualizationGuestInput: GuestInputDevice {
     let pointingDevice: _VZScreenCoordinatePointingDevice
     let displaySize: (width: Int, height: Int)
 
-    /// - Parameter captureRegion: The part of the window that screenshots capture. Positions are in the pixels of a
-    ///   screenshot, which are the window's pixels.
-    init(machine: VZVirtualMachine, captureRegion: VMCaptureRegion?) throws {
-        let classNames = ["_VZKeyboard", "_VZKeyEvent", "_VZScreenCoordinatePointingDevice", "_VZScreenCoordinatePointerEvent", "_VZScrollWheelEvent"]
-        guard classNames.allSatisfy({ NSClassFromString($0) != nil }),
+    /// - Parameters:
+    ///   - captureRegion: The part of the window that screenshots capture. Positions are in the pixels of a screenshot,
+    ///     which are the window's pixels.
+    ///   - needsDisplay: Whether the events have pointer events, which need the capture region.
+    init(machine: VZVirtualMachine, captureRegion: VMCaptureRegion?, needsDisplay: Bool) throws {
+        /// Everything that's called is checked, so that a version of macOS that changes it gives an error and not a crash.
+        let selectors = [
+            "_VZKeyEvent": "initWithType:keyCode:",
+            "_VZKeyboard": "sendKeyEvents:",
+            "_VZScreenCoordinatePointerEvent": "initWithLocation:pressedButtons:",
+            "_VZScreenCoordinatePointingDevice": "sendPointerEvents:",
+            "_VZScrollWheelEvent": "initWithEvent:",
+            "_VZPointingDevice": "sendScrollWheelEvents:",
+        ]
+        guard selectors.allSatisfy({ name, selector in
+                  (NSClassFromString(name) as? NSObject.Type)?.instancesRespond(to: NSSelectorFromString(selector)) == true
+              }),
               machine.responds(to: NSSelectorFromString("_keyboards")),
               machine.responds(to: NSSelectorFromString("_pointingDevices"))
         else {
@@ -250,12 +283,16 @@ private struct VirtualizationGuestInput: GuestInputDevice {
             throw Failure("The virtual machine has no USB pointing device to send pointer input to.")
         }
 
-        guard let captureRegion, let scale = NSApp.window(withWindowNumber: Int(captureRegion.windowID))?.backingScaleFactor else {
-            throw Failure("The virtual machine’s display isn’t on screen.")
-        }
-        let displaySize = VMDisplayGeometry.pixelSize(of: captureRegion.rect, scale: scale)
-        guard displaySize.width > 0, displaySize.height > 0 else {
-            throw Failure("The virtual machine’s display has no size yet.")
+        /// Keys don't use the display's size, so it's left at zero when the events have no pointer events.
+        var displaySize = (width: 0, height: 0)
+        if needsDisplay {
+            guard let captureRegion, let scale = NSApp.window(withWindowNumber: Int(captureRegion.windowID))?.backingScaleFactor else {
+                throw Failure("The virtual machine’s display isn’t on screen.")
+            }
+            displaySize = VMDisplayGeometry.pixelSize(of: captureRegion.rect, scale: scale)
+            guard displaySize.width > 0, displaySize.height > 0 else {
+                throw Failure("The virtual machine’s display has no size yet.")
+            }
         }
 
         self.keyboard = keyboard
@@ -273,7 +310,7 @@ private struct VirtualizationGuestInput: GuestInputDevice {
         sendPointer(at: point, buttons: buttons)
     }
 
-    func sendButton(_ button: VMMouseButton, isDown: Bool, clickCount: Int, at point: CGPoint, buttons: [VMMouseButton: Int]) {
+    func sendButton(_ button: VMMouseButton, isDown: Bool, at point: CGPoint, buttons: [VMMouseButton: Int]) {
         sendPointer(at: point, buttons: buttons)
     }
 

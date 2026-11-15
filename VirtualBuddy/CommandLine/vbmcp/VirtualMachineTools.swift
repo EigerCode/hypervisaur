@@ -322,7 +322,9 @@ enum VirtualMachineTools {
         description: """
         Types text with the virtual machine's keyboard, into whatever has keyboard focus, as if someone was typing it. \
         Line breaks press Return and tabs press Tab. The keys are those that type the text on the guest's keyboard layout, \
-        so pass that layout if it isn't U.S.; nothing is typed if the layout can't type some of the text.
+        so pass that layout if it isn't U.S.; nothing is typed if the layout can't type some of the text. The guest's \
+        keyboard is assumed to be ANSI, so on layouts whose keyboards are ISO, such as Swiss German, the keys for \
+        characters like <, > and § may come out swapped. Long text is refused: split it into several requests.
         """,
         inputSchema: schema([
             "name": property("string", "The name of the virtual machine."),
@@ -334,6 +336,9 @@ enum VirtualMachineTools {
             guard let text = arguments["text"]?.stringValue, !text.isEmpty else { throw Failure("The text argument is required.") }
 
             let events = try await Input.layout(arguments).events(typing: text)
+            guard VMInputEvent.estimatedDuration(of: events) <= VMInputEvent.maximumDuration else {
+                throw Failure("The text is too long to type in one request. Split it into smaller parts and type them one after another.")
+            }
             return try await Input.send(events, to: model, progress: progress)
         }
     )
@@ -375,7 +380,7 @@ enum VirtualMachineTools {
         """,
         inputSchema: schema([
             "name": property("string", "The name of the virtual machine."),
-            "text": property("string", "The text to find. Matches text that contains it, ignoring case."),
+            "text": property("string", "The text to find. Matches text that contains it, ignoring case and accents."),
         ], required: ["name", "text"]),
         run: { arguments, progress in
             let model = try Library.machine(named: try arguments.requiredString("name"))
@@ -933,8 +938,8 @@ private extension JSONValue {
     }
 
     func integer(_ key: String) -> Int? {
-        guard let value = self[key]?.numberValue, value.rounded() == value else { return nil }
-        return Int(value)
+        guard let value = self[key]?.numberValue else { return nil }
+        return Int(exactly: value)
     }
 
     func bool(_ key: String) -> Bool? {

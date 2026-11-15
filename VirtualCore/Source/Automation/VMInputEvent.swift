@@ -21,6 +21,43 @@ public enum VMInputEvent: Codable, Sendable, Equatable {
     case pause(milliseconds: Int)
 }
 
+extension VMInputEvent {
+    /// The time between events, so that the guest sees each of them.
+    public static let interval = Duration.milliseconds(10)
+    /// How long a mouse button is held down for a click.
+    public static let clickDuration = Duration.milliseconds(40)
+    /// The longest that sending events may take, which keeps a request well within the time the caller waits for it.
+    public static let maximumDuration = Duration.seconds(45)
+
+    /// Whether the event needs the display, since it's placed on it.
+    public var isPointerEvent: Bool {
+        switch self {
+        case .move, .button, .scroll: true
+        case .key, .pause: false
+        }
+    }
+
+    /// How long sending the events takes, from the time between them and their pauses.
+    public static func estimatedDuration(of events: [VMInputEvent]) -> Duration {
+        var total = Duration.zero
+        var previous: VMInputEvent?
+
+        for event in events {
+            if let previous {
+                let isClick = if case .button(_, true, _) = previous, case .button(_, false, _) = event { true } else { false }
+                total += isClick ? clickDuration : interval
+            }
+            previous = event
+
+            if case .pause(let milliseconds) = event {
+                total += .milliseconds(milliseconds)
+            }
+        }
+
+        return total
+    }
+}
+
 /// Maps between screenshots of a virtual machine's display and the positions its pointing device takes.
 public enum VMDisplayGeometry {
     /// The size in pixels of a capture of a region of a window, which is the size of its screenshots.
