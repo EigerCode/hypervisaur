@@ -120,6 +120,9 @@ final class DeepLinkHandler {
                 case .screenshot(let params):
                     guard let replyID = action.replyID else { throw Failure("A screenshot request needs a reply.") }
                     try await screenshotVM(named: params.name, reply: replyID)
+                case .input(let params):
+                    guard let replyID = action.replyID else { throw Failure("An input request needs a reply.") }
+                    try await sendInput(params.events, toVMNamed: params.name, reply: replyID)
                 case .clone(let params):
                     try await cloneVM(named: params.name, as: params.cloneName, reply: action.replyID)
                 }
@@ -145,6 +148,25 @@ final class DeepLinkHandler {
             try await VMScreenCapture.writePNG(image, to: AutomationReply.attachmentURL(for: replyID, pathExtension: "png"))
 
             writeReply(.success("Took a \(image.width)×\(image.height) screenshot of \(name.wrappedInSmartQuotes)."), for: replyID)
+        }
+
+        /// Sends keyboard and pointer input to a running virtual machine, replying with the size of its display.
+        func sendInput(_ encodedEvents: String, toVMNamed name: String, reply replyID: UUID) async throws {
+            let vm = try getVM(named: name)
+            guard let session = sessionManager.session(for: vm) else {
+                throw Failure("\(name.wrappedInSmartQuotes) isn't running.")
+            }
+
+            let events: [VMInputEvent]
+            do {
+                events = try JSONDecoder().decode([VMInputEvent].self, from: Data(encodedEvents.utf8))
+            } catch {
+                throw Failure("The input events couldn't be read: \(error.localizedDescription)")
+            }
+
+            let size = try await session.sendInput(events)
+
+            writeReply(.success("Sent \(events.count) input events to \(name.wrappedInSmartQuotes). The display is \(size.width)×\(size.height) pixels."), for: replyID)
         }
 
         func cloneVM(named name: String, as cloneName: String?, reply replyID: UUID?) async throws {

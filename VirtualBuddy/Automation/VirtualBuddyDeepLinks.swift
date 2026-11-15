@@ -23,6 +23,14 @@ struct ScreenshotVMParameters: Codable {
     var reply: String
 }
 
+struct InputVMParameters: Codable {
+    var name: String
+    /// The identifier of the ``AutomationReply`` to write once the input has been sent.
+    var reply: String
+    /// The ``VMInputEvent``s to send, as a JSON array.
+    var events: String
+}
+
 struct CloneVMParameters: Codable {
     var name: String
     /// The clone's name, which defaults to "Clone of" the original's name.
@@ -37,6 +45,7 @@ enum DeepLinkAction  {
     case boot(BootVMParameters)
     case stop(StopVMParameters)
     case screenshot(ScreenshotVMParameters)
+    case input(InputVMParameters)
     case clone(CloneVMParameters)
 }
 
@@ -46,6 +55,7 @@ extension DeepLinkAction {
         switch self {
         case .library, .open, .boot, .stop: nil
         case .screenshot(let params): UUID(uuidString: params.reply)
+        case .input(let params): UUID(uuidString: params.reply)
         case .clone(let params): params.reply.flatMap(UUID.init(uuidString:))
         }
     }
@@ -78,6 +88,12 @@ extension DeepLinkAction {
                 throw Failure("Invalid URL: the reply must be a UUID")
             }
             self = .screenshot(params)
+        case "input":
+            let params = try Self.decodeParameters(InputVMParameters.self, from: components)
+            guard UUID(uuidString: params.reply) != nil else {
+                throw Failure("Invalid URL: the reply must be a UUID")
+            }
+            self = .input(params)
         case "clone":
             let params = try Self.decodeParameters(CloneVMParameters.self, from: components)
             self = .clone(params)
