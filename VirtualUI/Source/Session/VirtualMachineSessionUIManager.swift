@@ -109,12 +109,13 @@ public final class VirtualMachineSessionUIManager: ObservableObject {
     /// Opening it from the library shows its window, and so does anything going wrong while it starts, so that it isn't missed.
     /// A virtual machine that's already running is left as it is, and one that's open but stopped is started without
     /// bringing its window forward.
-    public func launchInBackground(_ vm: VBVirtualMachine, library: VMLibraryController) {
+    /// Returns once starting has ended, whether or not the virtual machine runs.
+    public func launchInBackground(_ vm: VBVirtualMachine, library: VMLibraryController) async {
         if let existingSession = session(for: vm) {
             /// A session that isn't running, such as one whose window shows an error, is started again where it is, without
             /// bringing its window forward.
             if existingSession.controller.canStart {
-                Task { await existingSession.startOrResume() }
+                await existingSession.startOrResume()
             }
             return
         }
@@ -131,14 +132,12 @@ public final class VirtualMachineSessionUIManager: ObservableObject {
 
         moveToBackground(session, library: library)
 
-        Task { [weak self, weak library] in
-            await session.startOrResume()
+        await session.startOrResume()
 
-            /// Starting can end without the virtual machine running, such as when resuming a saved session is cancelled.
-            /// Its state may not have changed, so it's looked at once more, to let go of a session that has nothing to run.
-            guard let self, let library, self.backgroundSessionIDs.contains(vm.id), !session.needsStoppingBeforeClose else { return }
-            self.backgroundSessionStateDidChange(session, library: library)
-        }
+        /// Starting can end without the virtual machine running, such as when resuming a saved session is cancelled.
+        /// Its state may not have changed, so it's looked at once more, to let go of a session that has nothing to run.
+        guard backgroundSessionIDs.contains(vm.id), !session.needsStoppingBeforeClose else { return }
+        backgroundSessionStateDidChange(session, library: library)
     }
 
     /// Opens the virtual machine's window and starts or resumes it, or brings its window forward when it's already running.

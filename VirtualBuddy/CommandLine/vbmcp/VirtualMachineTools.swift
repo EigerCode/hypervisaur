@@ -455,17 +455,23 @@ enum VirtualMachineTools {
             return "\(model.name) is already running."
         }
 
+        /// The reply tells whether the virtual machine started. Waiting for it also keeps this process running until the app has
+        /// checked who sent the request, which it can't do once the sender has quit, so the request would be dropped.
+        let replyID = UUID()
+        var parameters = ["reply": replyID.uuidString]
         if inBackground {
-            try await App.open("boot", name: model.name, parameters: ["background": "true"], activates: false)
-        } else {
-            try await App.open("boot", name: model.name)
+            parameters["background"] = "true"
         }
+
+        try await App.open("boot", name: model.name, parameters: parameters, activates: !inBackground)
+        await progress("Waiting for Hypervisaur to start \(model.name)", nil)
+
+        let timeoutMessage = "Hypervisaur hasn’t started \(model.name). If Hypervisaur is asking whether to allow it to be controlled, allow it, then call start_vm again."
+        let reply = try await AutomationReply.wait(for: replyID, timeout: startTimeout, timeoutMessage: timeoutMessage)
 
         guard model.configuration.systemType == .windows else {
-            return inBackground ? "Asked Hypervisaur to start \(model.name) without a window." : "Asked Hypervisaur to start \(model.name)."
+            return reply.message ?? "Started \(model.name)."
         }
-
-        await progress("Waiting for Hypervisaur to start \(model.name)", nil)
 
         let deadline = ContinuousClock.now + startTimeout
         while ContinuousClock.now < deadline {
@@ -475,7 +481,7 @@ enum VirtualMachineTools {
             }
         }
 
-        throw Failure("Hypervisaur hasn’t started \(model.name). If Hypervisaur is asking whether to allow it to be controlled, allow it, then call start_vm again.")
+        throw Failure(timeoutMessage)
     }
 
     /// Cloning on a volume that isn't APFS copies everything, which takes a while for a large disk.
@@ -508,8 +514,14 @@ enum VirtualMachineTools {
 
     private static func stop(_ model: VBVirtualMachine, progress: @escaping MCPTool.ProgressHandler) async throws -> String {
         guard model.configuration.systemType == .windows else {
-            try await App.open("stop", name: model.name)
-            return "Asked \(model.name) to shut down."
+            let replyID = UUID()
+            try await App.open("stop", name: model.name, parameters: ["reply": replyID.uuidString])
+            let reply = try await AutomationReply.wait(
+                for: replyID,
+                timeout: Input.timeout,
+                timeoutMessage: "Hypervisaur hasn’t stopped \(model.name). If Hypervisaur is asking whether to allow it to be controlled, allow it, then call stop_vm again."
+            )
+            return reply.message ?? "Asked \(model.name) to shut down."
         }
 
         guard WindowsGuestStatus(for: model) != .stopped else {

@@ -112,13 +112,21 @@ final class DeepLinkHandler {
                 case .open(let params):
                     try openVM(named: params.name, options: nil)
                 case .boot(let params) where params.background == true:
-                    sessionManager.launchInBackground(try getVM(named: params.name), library: library)
+                    let vm = try getVM(named: params.name)
+                    /// Starting takes a while, and requests for other virtual machines, such as screenshots, don't wait for it.
+                    Task { await startInBackground(vm, reply: action.replyID) }
                 case .boot(let params):
                     var effectiveOptions = params.options ?? VMSessionOptions.default
                     effectiveOptions.autoBoot = true
                     try openVM(named: params.name, options: effectiveOptions)
+                    if let replyID = action.replyID {
+                        writeReply(.success("Opened \(params.name.wrappedInSmartQuotes) to start it."), for: replyID)
+                    }
                 case .stop(let params):
                     try await stopVM(named: params.name)
+                    if let replyID = action.replyID {
+                        writeReply(.success("Asked \(params.name.wrappedInSmartQuotes) to shut down."), for: replyID)
+                    }
                 case .screenshot(let params):
                     guard let replyID = action.replyID else { throw Failure("A screenshot request needs a reply.") }
                     try await screenshotVM(named: params.name, reply: replyID)
@@ -135,6 +143,24 @@ final class DeepLinkHandler {
                     let alert = NSAlert(error: error)
                     alert.runModal()
                 }
+            }
+        }
+
+        /// Starts a virtual machine without a window, replying once it runs or once starting it has ended without it running.
+        func startInBackground(_ vm: VBVirtualMachine, reply replyID: UUID?) async {
+            await sessionManager.launchInBackground(vm, library: library)
+
+            guard let replyID else { return }
+
+            let name = vm.name.wrappedInSmartQuotes
+            switch sessionManager.session(for: vm)?.controller.state {
+            case .running:
+                let window = sessionManager.isRunningInBackground(vm) ? "without a window" : "in its window"
+                writeReply(.success("\(name) is running \(window)."), for: replyID)
+            case .stopped(let error?):
+                writeReply(.failure(Failure("\(name) didn't start: \(error.localizedDescription)")), for: replyID)
+            default:
+                writeReply(.failure(Failure("\(name) didn't start.")), for: replyID)
             }
         }
 
