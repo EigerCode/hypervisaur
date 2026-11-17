@@ -454,7 +454,7 @@ struct LibraryItemView: View {
 
         if !hasOpenSession {
             Button {
-                sessionManager.launchInBackground(vm, library: library)
+                Task { await sessionManager.launchInBackground(vm, library: library) }
             } label: {
                 Label(vm.savedSession != nil ? "Resume Without Window" : "Start Without Window", systemImage: "rectangle.dashed")
             }

@@ -13,10 +13,15 @@ struct BootVMParameters: Codable {
     var options: VMSessionOptions?
     /// Starts the virtual machine without opening its window. The options don't apply then.
     var background: Bool?
+    /// The identifier of the ``AutomationReply`` to write once the virtual machine has started, or once its window has
+    /// opened when it isn't started in the background.
+    var reply: String?
 }
 
 struct StopVMParameters: Codable {
     var name: String
+    /// The identifier of the ``AutomationReply`` to write once the virtual machine has been asked to stop.
+    var reply: String?
 }
 
 struct ScreenshotVMParameters: Codable {
@@ -55,7 +60,9 @@ extension DeepLinkAction {
     /// The reply that the sender is waiting for, if any. Failures are written to it instead of being shown.
     var replyID: UUID? {
         switch self {
-        case .library, .open, .boot, .stop: nil
+        case .library, .open: nil
+        case .boot(let params): params.reply.flatMap(UUID.init(uuidString:))
+        case .stop(let params): params.reply.flatMap(UUID.init(uuidString:))
         case .screenshot(let params): UUID(uuidString: params.reply)
         case .input(let params): UUID(uuidString: params.reply)
         case .clone(let params): params.reply.flatMap(UUID.init(uuidString:))
